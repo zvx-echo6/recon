@@ -142,3 +142,31 @@ def dispatch_once():
                 })
 
     return results
+
+
+def dispatch_loop(stop_event, db, config, interval=30):
+    """Run dispatch_once() on a loop until stop_event is set.
+
+    Designed to run as a service thread. Never raises to the caller.
+    """
+    logger.info("[dispatcher] Loop started (interval: %ds)", interval)
+
+    while not stop_event.is_set():
+        try:
+            results = dispatch_once()
+            if results:
+                actions = {}
+                for r in results:
+                    a = r.get('action', 'unknown')
+                    actions[a] = actions.get(a, 0) + 1
+                logger.info("[dispatcher] Dispatched %d items: %s",
+                            len(results),
+                            ", ".join(f"{k}={v}" for k, v in sorted(actions.items())))
+            else:
+                logger.debug("[dispatcher] No items to dispatch")
+        except Exception as e:
+            logger.error("[dispatcher] Error in dispatch_once: %s", e, exc_info=True)
+
+        stop_event.wait(interval)
+
+    logger.info("[dispatcher] Loop stopped")

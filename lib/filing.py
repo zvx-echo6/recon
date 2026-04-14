@@ -156,3 +156,60 @@ def file_processed_item(doc_hash, source_file_path, db, config, dry_run=False):
         logger.error("DB/Qdrant update failed for %s: %s", doc_hash[:8], e)
 
     return result
+
+
+def filing_worker_loop(stop_event, db, config, interval=30):
+    """Run filing on items ready to be filed until stop_event is set.
+
+    Watches for documents with status='complete', organized_at IS NULL,
+    and path in /opt/recon/data/processing/. Files them to library.
+
+    Designed to run as a service thread. Never raises to the caller.
+    """
+    logger.info("[filing] Worker started (interval: %ds)", interval)
+
+    while not stop_event.is_set():
+        try:
+            conn = db._get_conn()
+            rows = conn.execute(
+                "SELECT hash, path FROM documents "
+                "WHERE status = 'complete' "
+                "AND organized_at IS NULL "
+                "AND path LIKE '/opt/recon/data/processing/%' "
+                "LIMIT 50"
+            ).fetchall()
+
+            if rows:
+                filed = 0
+                skipped = 0
+                errors = 0
+                for row in rows:
+                    if stop_event.is_set():
+                        break
+                    try:
+                        result = file_processed_item(row['hash'], row['path'], db, config)
+                        action = result.get('action', 'unknown')
+                        if action == 'filed':
+                            filed += 1
+                        elif action.startswith('skip'):
+                            skipped += 1
+                        elif action == 'error':
+                            errors += 1
+                            logger.warning("[filing] Error filing %s: %s",
+                                           row['hash'][:8], result.get('error', 'unknown'))
+                    except Exception as e:
+                        errors += 1
+                        logger.error("[filing] Exception filing %s: %s",
+                                     row['hash'][:8], e, exc_info=True)
+
+                logger.info("[filing] Batch: %d filed, %d skipped, %d errors",
+                            filed, skipped, errors)
+            else:
+                logger.debug("[filing] No items ready to file")
+
+        except Exception as e:
+            logger.error("[filing] Error in filing worker: %s", e, exc_info=True)
+
+        stop_event.wait(interval)
+
+    logger.info("[filing] Worker stopped")
