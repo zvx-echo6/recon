@@ -882,7 +882,11 @@ def _build_knowledge_stats():
     sources = conn.execute("""
         SELECT
             c.source,
-            CASE WHEN c.path LIKE 'http%' THEN 'web' ELSE 'pdf' END as type,
+            CASE
+              WHEN c.source = 'stream.echo6.co' THEN 'transcript'
+              WHEN c.path LIKE 'http%' THEN 'web'
+              ELSE 'pdf'
+            END as type,
             COUNT(DISTINCT c.hash) as catalogued,
             COUNT(DISTINCT CASE WHEN d.status = 'complete' THEN d.hash END) as complete,
             COUNT(DISTINCT CASE WHEN d.status NOT IN ('complete', 'failed') AND d.status IS NOT NULL THEN d.hash END) as in_pipeline,
@@ -935,11 +939,17 @@ def _build_knowledge_stats():
     """).fetchone()[0]
 
     recent = conn.execute("""
-        SELECT book_title, status, concepts_extracted, vectors_inserted,
-               CASE WHEN path LIKE 'http%' THEN 'web' ELSE 'pdf' END as type
-        FROM documents
-        WHERE status = 'complete'
-        ORDER BY embedded_at DESC
+        SELECT COALESCE(d.book_title, c.filename) as title,
+               d.status, d.concepts_extracted, d.vectors_inserted,
+               CASE
+                 WHEN c.source = 'stream.echo6.co' THEN 'transcript'
+                 WHEN d.path LIKE 'http%' THEN 'web'
+                 ELSE 'pdf'
+               END as type
+        FROM documents d
+        JOIN catalogue c ON d.hash = c.hash
+        WHERE d.status = 'complete'
+        ORDER BY d.embedded_at DESC
         LIMIT 10
     """).fetchall()
 
@@ -979,7 +989,7 @@ def _build_knowledge_stats():
         'source_types': dict(sorted(source_type_counts.items(), key=lambda x: -x[1])),
         'sample_size': sample_size,
         'recent_complete': [{
-            'title': r['book_title'] or 'Untitled',
+            'title': r['title'] or 'Untitled',
             'concepts': r['concepts_extracted'] or 0,
             'vectors': r['vectors_inserted'] or 0,
             'type': r['type'],

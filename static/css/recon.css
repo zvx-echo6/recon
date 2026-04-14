@@ -210,6 +210,7 @@ tr:hover { background: var(--bg-secondary); }
 }
 .badge-web { background: #1e3a5f; color: #60a5fa; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
 .badge-pdf { background: #2d5a2d; color: #4ade80; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-transcript { background: #3b1f5e; color: #c084fc; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
 
 /* ── Trend indicators ── */
 .trend { font-size: 11px; margin-left: 6px; }
