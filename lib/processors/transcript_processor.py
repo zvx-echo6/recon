@@ -57,8 +57,18 @@ def pre_flight(content_path, meta_path, db, config):
     )
     proc_dir = os.path.join(processing_root, file_hash)
     concepts_dir = os.path.join(config['paths']['concepts'], file_hash)
-    shutil.rmtree(proc_dir, ignore_errors=True)
-    shutil.rmtree(concepts_dir, ignore_errors=True)
+    if os.path.exists(proc_dir):
+        try:
+            shutil.rmtree(proc_dir)
+        except Exception as e:
+            logger.error("Stale cleanup failed for %s: %s", proc_dir, e)
+            raise
+    if os.path.exists(concepts_dir):
+        try:
+            shutil.rmtree(concepts_dir)
+        except Exception as e:
+            logger.error("Stale cleanup failed for %s: %s", concepts_dir, e)
+            raise
 
     # Hash dedupe: if hash exists in catalogue, delete the pair and return
     conn = db._get_conn()
