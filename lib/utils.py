@@ -388,3 +388,19 @@ def generate_download_url(filepath, library_root='/mnt/library', base_url='https
     parts = rel.split(os.sep)
     encoded = '/'.join(quote(p) for p in parts)
     return f"{base_url}/{encoded}"
+
+
+def resolve_text_dir(file_hash, config, db=None):
+    """Resolve the text directory for a document.
+
+    If db is provided and documents.text_dir is set for this hash, use that.
+    Otherwise fall back to the legacy location: config['paths']['text']/{hash}/
+    """
+    if db is not None:
+        conn = db._get_conn()
+        row = conn.execute(
+            "SELECT text_dir FROM documents WHERE hash = ?", (file_hash,)
+        ).fetchone()
+        if row and row['text_dir']:
+            return row['text_dir']
+    return os.path.join(config['paths']['text'], file_hash)

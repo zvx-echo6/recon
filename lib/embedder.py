@@ -21,6 +21,7 @@ from qdrant_client.models import PointStruct, SparseVector
 
 from .utils import get_config, concept_id, generate_download_url, setup_logging
 from .status import StatusDB
+from .utils import resolve_text_dir
 
 logger = setup_logging('recon.embedder')
 
@@ -274,7 +275,7 @@ def embed_single(file_hash, db, config):
         source_type = 'web' if is_web else 'document'
 
         # Check meta.json for explicit source_type (e.g. 'transcript')
-        text_dir = os.path.join(config['paths']['text'], file_hash)
+        text_dir = resolve_text_dir(file_hash, config, db)
         meta_path = os.path.join(text_dir, 'meta.json')
         page_timestamps = {}
         if os.path.exists(meta_path):
