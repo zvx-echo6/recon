@@ -3,7 +3,7 @@
 RECON CLI — Main entry point.
 
 Subcommands: scan, queue, extract, enrich, embed, run, search, upload,
-ingest-url, crawl, ingest-peertube, organize, status, catalogue, failures, validate, rebuild, serve, ingest.
+ingest-url, ingest-peertube, organize, status, catalogue, failures, validate, rebuild, serve, ingest.
 
 Usage: cd /opt/recon && source venv/bin/activate && python3 recon.py <command>
 """
@@ -580,73 +580,6 @@ def cmd_ingest_url(args):
 
 
 
-def cmd_crawl(args):
-    from lib.crawler import crawl_site
-
-    print(f"Crawling {args.url}...")
-    if args.include:
-        print(f"  Include paths: {args.include}")
-    if args.exclude:
-        print(f"  Exclude paths: {args.exclude}")
-    if args.dry_run:
-        print(f"  DRY RUN — no content will be ingested")
-    print()
-
-    result = crawl_site(
-        base_url=args.url,
-        category=args.category,
-        source=args.source,
-        include=args.include,
-        exclude=args.exclude,
-        max_pages=args.max_pages,
-        max_depth=args.max_depth,
-        delay=args.delay,
-        dry_run=args.dry_run,
-        use_sitemap=not args.no_sitemap,
-    )
-
-    method = result.get('discovery_method', 'none')
-    print(f"Discovery method: {method}")
-
-    if args.dry_run:
-        urls = result.get('urls', [])
-        print(f"Found {len(urls)} URLs that would be ingested:\n")
-        for i, url in enumerate(urls, 1):
-            print(f"  {i:4d}. {url}")
-        print(f"\nTotal: {len(urls)} pages")
-        print(f"Re-run without --dry-run to ingest.")
-        return 0
-
-    summary = result.get('summary', {})
-    print(f"\nResults:")
-    print(f"  New:        {summary.get('succeeded', 0)}")
-    print(f"  Duplicates: {summary.get('duplicates', 0)}")
-    print(f"  Failed:     {summary.get('failed', 0)}")
-    print(f"  Total:      {summary.get('total', 0)}")
-
-    failed_results = [r for r in result.get('results', []) if r.get('status') == 'failed']
-    if failed_results:
-        print(f"\nFailed URLs:")
-        for r in failed_results[:10]:
-            print(f"  {r['url']}: {r.get('error', 'Unknown error')}")
-        if len(failed_results) > 10:
-            print(f"  ... and {len(failed_results) - 10} more")
-
-    if args.enrich or args.process:
-        print("\nRunning enrichment...")
-        from lib.enricher import run_enrichment
-        enriched = run_enrichment()
-        print(f"  Enriched: {enriched}")
-
-    if args.process:
-        print("\nRunning embedding...")
-        from lib.embedder import run_embedding
-        embedded = run_embedding()
-        print(f"  Embedded: {embedded}")
-
-    return 0
-
-
 def cmd_validate(args):
     from scripts.validate import run_validation
     run_validation(deep=args.deep)
@@ -671,7 +604,6 @@ def cmd_service(args):
     Bundles: Flask dashboard + dispatcher + pipeline stages + filing worker + progress reporter.
     All threads are daemon threads; SIGTERM/SIGINT trigger graceful shutdown.
     """
-    from lib.extractor import run_extraction
     from lib.enricher import run_enrichment
     from lib.embedder import run_embedding
     from lib.api import app, run_server as start_dashboard
@@ -682,7 +614,6 @@ def cmd_service(args):
     proc = config.get('processing', {})
     svc = config.get('service', {})
 
-    extract_workers = proc.get('extract_workers', 4)
     enrich_workers = proc.get('enrich_workers', 16)
     embed_workers = proc.get('embed_workers', 4)
     poll_interval = svc.get('stage_poll_interval', 30)
@@ -693,7 +624,7 @@ def cmd_service(args):
     web_port = config.get('web', {}).get('port', 8420)
 
     stop_event = threading.Event()
-    totals = {'extract': 0, 'enrich': 0, 'embed': 0}
+    totals = {'enrich': 0, 'embed': 0}
 
     def shutdown(signum, frame):
         sig_name = signal.Signals(signum).name
@@ -746,8 +677,6 @@ def cmd_service(args):
     threads = [
         threading.Thread(target=lambda: dispatch_loop(stop_event, db, config, interval=dispatch_interval),
                          daemon=True, name='dispatcher'),
-        threading.Thread(target=stage_loop, daemon=True, name='extract',
-                         args=('extract', lambda: run_extraction(workers=extract_workers))),
         threading.Thread(target=stage_loop, daemon=True, name='enrich',
                          args=('enrich', lambda: run_enrichment(workers=enrich_workers))),
         threading.Thread(target=stage_loop, daemon=True, name='embed',
@@ -761,7 +690,7 @@ def cmd_service(args):
 
     logger.info("=== RECON Service Starting ===")
     logger.info(f"  Dashboard: {web_host}:{web_port}")
-    logger.info(f"  Workers: extract={extract_workers}, enrich={enrich_workers}, embed={embed_workers}")
+    logger.info(f"  Workers: enrich={enrich_workers}, embed={embed_workers}")
     logger.info(f"  Dispatcher: every {dispatch_interval}s | Filing: every {filing_interval}s")
     logger.info(f"  Progress: every {progress_interval}s")
 
@@ -1188,21 +1117,6 @@ def main():
     p.set_defaults(func=cmd_ingest_url)
 
     # crawl
-    p = sub.add_parser('crawl', help='Crawl a site and ingest discovered pages')
-    p.add_argument('url', help='Base URL to crawl')
-    p.add_argument('--category', default='Web', help='Category for ingested content')
-    p.add_argument('--source', default=None, help='Source identifier (default: domain name)')
-    p.add_argument('--include', nargs='+', help='Only include URL paths starting with these prefixes')
-    p.add_argument('--exclude', nargs='+', help='Exclude URL paths starting with these prefixes')
-    p.add_argument('--max-pages', type=int, default=500, help='Maximum pages to ingest')
-    p.add_argument('--max-depth', type=int, default=3, help='Maximum link-follow depth')
-    p.add_argument('--delay', type=float, default=1.0, help='Delay between page fetches (seconds)')
-    p.add_argument('--dry-run', action='store_true', help='Discover URLs without ingesting')
-    p.add_argument('--no-sitemap', action='store_true', help='Skip sitemap, use link-following only')
-    p.add_argument('--enrich', action='store_true', help='Run enrichment after crawl')
-    p.add_argument('--process', action='store_true', help='Full pipeline: crawl + enrich + embed')
-    p.set_defaults(func=cmd_crawl)
-
     # validate
     p = sub.add_parser('validate', help='Validate pipeline consistency')
     p.add_argument('--deep', action='store_true', help='Deep validation (check all files)')
