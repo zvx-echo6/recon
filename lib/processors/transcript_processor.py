@@ -132,11 +132,11 @@ def pre_flight(content_path, meta_path, db, config):
     # Queue and advance to extracted
     db.queue_document(file_hash)
 
-    # Set text_dir on the documents row
+    # Set text_dir and page_count on the documents row
     conn = db._get_conn()
     conn.execute(
-        "UPDATE documents SET text_dir = ? WHERE hash = ?",
-        (proc_dir, file_hash)
+        "UPDATE documents SET text_dir = ?, page_count = ? WHERE hash = ?",
+        (proc_dir, len(pages), file_hash)
     )
     conn.commit()
 
