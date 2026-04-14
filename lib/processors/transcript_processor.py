@@ -6,6 +6,7 @@ Reads a raw text file + meta.json sidecar, hashes, dedupes, splits into
 page_NNNN.txt files, and registers in the database.
 
 Phase 3: first processor implementation.
+Phase 4: added stale state cleanup at start of pre_flight.
 """
 import hashlib
 import json
@@ -50,6 +51,15 @@ def pre_flight(content_path, meta_path, db, config):
         result['error'] = f"Cannot hash content file: {e}"
         return result
 
+    # Stale state cleanup — remove any pre-existing processing/concepts dirs
+    processing_root = config.get('pipeline', {}).get(
+        'processing_root', '/opt/recon/data/processing'
+    )
+    proc_dir = os.path.join(processing_root, file_hash)
+    concepts_dir = os.path.join(config['paths']['concepts'], file_hash)
+    shutil.rmtree(proc_dir, ignore_errors=True)
+    shutil.rmtree(concepts_dir, ignore_errors=True)
+
     # Hash dedupe: if hash exists in catalogue, delete the pair and return
     conn = db._get_conn()
     existing = conn.execute(
@@ -59,7 +69,8 @@ def pre_flight(content_path, meta_path, db, config):
         logger.info("Duplicate hash %s, removing pair", file_hash[:8])
         try:
             os.remove(content_path)
-            os.remove(meta_path)
+            if meta_path:
+                os.remove(meta_path)
         except OSError as e:
             logger.warning("Failed to remove duplicate pair: %s", e)
         result['action'] = 'duplicate'
@@ -86,10 +97,6 @@ def pre_flight(content_path, meta_path, db, config):
         return result
 
     # Set up processing directory
-    processing_root = config.get('pipeline', {}).get(
-        'processing_root', '/opt/recon/data/processing'
-    )
-    proc_dir = os.path.join(processing_root, file_hash)
     try:
         os.makedirs(proc_dir, exist_ok=True)
     except Exception as e:

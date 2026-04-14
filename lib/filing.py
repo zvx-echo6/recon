@@ -95,6 +95,15 @@ def file_processed_item(doc_hash, source_file_path, db, config, dry_run=False):
         result["action"] = "skip_unclassified"
         return result
 
+    # Fix 1.1: Preserve the source file's actual extension instead of
+    # the default .pdf that sanitize_filename() may have applied
+    source_ext = os.path.splitext(source_file_path)[1].lower()
+    if source_ext:
+        target_stem, _old_ext = os.path.splitext(target_path)
+        target_path = target_stem + source_ext
+        san_stem, _old_ext = os.path.splitext(sanitized_name)
+        sanitized_name = san_stem + source_ext
+
     result["target_path"] = target_path
 
     # If already at target (idempotency), just mark organized
