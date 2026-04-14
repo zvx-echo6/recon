@@ -149,10 +149,16 @@ def pre_flight(content_path, meta_path, db, config):
     # Queue and advance to extracted
     db.queue_document(file_hash)
 
-    # Set text_dir and page_count on the documents row
+    # Set text_dir and page_count on the documents row.
+    # Transcripts are derived text from PeerTube videos, not primary sources.
+    # They don't get filed into library/Domain/Subdomain/ like PDFs -- instead,
+    # they're marked organized in-place. Their watch URL remains in catalogue.path
+    # and Qdrant download_url so users clicking search results go to PeerTube.
+    # The filing worker's path LIKE filter naturally excludes transcripts since
+    # their documents.path is the watch URL, not a filesystem path.
     conn = db._get_conn()
     conn.execute(
-        "UPDATE documents SET text_dir = ?, page_count = ? WHERE hash = ?",
+        "UPDATE documents SET text_dir = ?, page_count = ?, organized_at = CURRENT_TIMESTAMP WHERE hash = ?",
         (proc_dir, len(pages), file_hash)
     )
     conn.commit()
