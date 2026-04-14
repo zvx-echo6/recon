@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">Service Health</h3>
+
+<div id="health-grid" class="stat-grid" style="grid-template-columns:repeat(auto-fit, minmax(250px, 1fr));">
+    <div class="stat-card">
+        <div class="label">Qdrant</div>
+        <div class="value text-small" id="h-qdrant"><span class="svc-dot unknown"></span>Checking...</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">TEI Embeddings</div>
+        <div class="value text-small" id="h-tei"><span class="svc-dot unknown"></span>Checking...</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">NFS Mount</div>
+        <div class="value text-small" id="h-nfs"><span class="svc-dot unknown"></span>Checking...</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Gemini API</div>
+        <div class="value text-small" id="h-gemini"><span class="svc-dot unknown"></span>Checking...</div>
+    </div>
+</div>
+
+<h3 class="section-title mt-24">Pipeline Status</h3>
+<div id="h-pipeline" class="panel text-small text-dim">Loading...</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadHealth() {
+    try {
+        var resp = await fetch('/api/health');
+        var data = await resp.json();
+        var c = data.components || {};
+
+        function dot(status) {
+            var cls = status === 'up' ? 'active' : (status === 'configured' ? 'active' : 'inactive');
+            return '<span class="svc-dot ' + cls + '"></span>';
+        }
+
+        var q = c.qdrant || {};
+        document.getElementById('h-qdrant').innerHTML = dot(q.status) + (q.status === 'up' ? 'Online — ' + RECON.fmt(q.vectors) + ' vectors' : 'Offline' + (q.error ? ' — ' + q.error : ''));
+
+        var t = c.tei || {};
+        document.getElementById('h-tei').innerHTML = dot(t.status) + (t.status === 'up' ? 'Online' : 'Offline' + (t.error ? ' — ' + t.error : ''));
+
+        var n = c.nfs || {};
+        document.getElementById('h-nfs').innerHTML = dot(n.status) + (n.status === 'up' ? 'Mounted' : 'Not mounted');
+
+        var g = c.gemini || {};
+        document.getElementById('h-gemini').innerHTML = dot(g.status === 'configured' ? 'up' : 'down') + (g.status === 'configured' ? g.keys + ' keys configured' : 'No keys');
+
+        // Pipeline
+        var p = data.pipeline || {};
+        var html = '';
+        Object.keys(p).forEach(function(k) {
+            html += '<div style="margin:4px 0;"><span class="status status-' + k + '">' + k + '</span>: ' + p[k] + '</div>';
+        });
+        document.getElementById('h-pipeline').innerHTML = html || '<span class="text-dim">No pipeline data</span>';
+    } catch(e) {
+        document.getElementById('h-qdrant').innerHTML = '<span class="svc-dot inactive"></span>Error: ' + e.message;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    RECON.startRefresh(loadHealth, 30000);
+});
+</script>
+{% endblock %}

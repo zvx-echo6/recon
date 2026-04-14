@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">Web Ingest</h3>
+<div style="margin-bottom:8px;">
+    <a href="#single" class="btn active" onclick="showSection('single')" id="tab-single">Single/Batch URL</a>
+    <a href="#crawl" class="btn" onclick="showSection('crawl')" id="tab-crawl">Site Crawl</a>
+</div>
+
+<div id="section-single">
+<div class="panel">
+    <div class="mb-16">
+        <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">URL(s) — one per line for batch</label>
+        <textarea id="wi-urls" class="search-box" rows="4" placeholder="https://example.com/article" style="resize:vertical;margin-bottom:0;"></textarea>
+    </div>
+    <div class="mb-16">
+        <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Category</label>
+        <input type="text" id="wi-category" list="wi-cat-list" class="search-box" value="Web"
+            placeholder="Category..." style="margin-bottom:0;">
+        <datalist id="wi-cat-list">{{ options_html|safe }}</datalist>
+    </div>
+    <button class="btn" id="wi-btn" onclick="doWebIngest()">Ingest</button>
+    <span id="wi-status" style="margin-left:12px;font-size:12px;"></span>
+</div>
+<div id="wi-results" style="display:none;" class="panel" style="max-height:300px;overflow-y:auto;"></div>
+</div>
+
+<div id="section-crawl" style="display:none;">
+<div class="panel">
+    <div class="mb-16">
+        <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Site URL</label>
+        <input type="text" id="crawl-url" class="search-box" placeholder="https://example.com" style="margin-bottom:0;">
+    </div>
+    <div class="grid-2 mb-16">
+        <div>
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Category</label>
+            <input type="text" id="crawl-category" list="wi-cat-list" class="search-box" value="Web" style="margin-bottom:0;">
+        </div>
+        <div>
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Max Pages</label>
+            <input type="number" id="crawl-max-pages" class="search-box" value="500" min="1" max="5000" style="margin-bottom:0;">
+        </div>
+    </div>
+    <div class="grid-2 mb-16">
+        <div>
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Include Paths (comma-separated)</label>
+            <input type="text" id="crawl-include" class="search-box" placeholder="/docs/, /blog/" style="margin-bottom:0;">
+        </div>
+        <div>
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Exclude Paths (comma-separated)</label>
+            <input type="text" id="crawl-exclude" class="search-box" placeholder="/search, /login" style="margin-bottom:0;">
+        </div>
+    </div>
+    <button class="btn" id="crawl-preview-btn" onclick="doCrawl(true)">Preview</button>
+    <button class="btn" id="crawl-btn" onclick="doCrawl(false)" style="margin-left:8px;">Crawl &amp; Ingest</button>
+    <span id="crawl-status" style="margin-left:12px;font-size:12px;"></span>
+</div>
+<div id="crawl-results" style="display:none;" class="panel" style="max-height:400px;overflow-y:auto;font-size:12px;"></div>
+</div>
+
+<h3 class="section-title mt-24">Recent Web Ingestions</h3>
+<table>
+    <tr><th>Title</th><th>Source/Category</th><th>Status</th><th>Pages</th><th>Concepts</th></tr>
+    {% for d in web_docs %}
+    <tr>
+        <td title="{{ d.path or '' }}" style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ d.book_title or d.filename or '?' }}</td>
+        <td>{{ d.source or '' }}/{{ d.category or '' }}</td>
+        <td><span class="status status-{{ d.status or 'unknown' }}">{{ d.status or 'unknown' }}</span></td>
+        <td>{{ d.pages_extracted or 0 }}</td>
+        <td>{{ d.concepts_extracted or 0 }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/web-ingest.js"></script>
+{% endblock %}

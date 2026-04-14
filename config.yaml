@@ -1,0 +1,440 @@
+# RECON Configuration
+# See PROJECT-BIBLE.md Section 11 for full documentation
+
+# Root path for the PDF library (NFS mount from pi-nas)
+library_root: /mnt/library
+
+processing:
+  max_pdf_size_mb: 2000         # Raised from 200MB default for large scanned books
+  extract_workers: 4          # Concurrent PDF extraction threads
+  enrich_workers: 16          # Concurrent Gemini enrichment threads (4 keys x 4)
+  embed_workers: 4            # Concurrent embedding threads
+  enrich_window_size: 5       # Pages per enrichment window (sent to Gemini)
+  embed_batch_size: 500       # Vectors per Qdrant upsert batch
+  rate_limit_delay: 0.1       # Delay between Gemini API calls (seconds)
+  max_retries: 5              # Max retries for failed documents
+  extract_timeout: 1800      # Max seconds per document extraction (30 min, allows vision OCR)
+  page_timeout: 30           # Max seconds per page extraction
+  enrich_max_retries: 5        # Max retries per enrichment window
+  enrich_base_delay: 5.0       # Base backoff delay (seconds) — ~5s, 10s, 20s, 40s, 80s
+  enrich_max_delay: 120.0      # Maximum backoff delay cap (seconds)
+
+embedding:
+  backend: tei                # "tei" (primary, ~1,711 emb/sec) or "ollama" (fallback, ~8 emb/sec)
+  tei_host: 100.64.0.14       # TEI server (cortex)
+  tei_port: 8090              # TEI HTTP port
+  ollama_host: 100.64.0.14    # Ollama server (cortex) — fallback only
+  ollama_port: 11434          # Ollama HTTP port
+  model: bge-m3               # Embedding model name
+  dimensions: 1024            # CRITICAL: bge-m3 is 1024-dim, NOT 384
+  batch_size: 128             # Embeddings per TEI batch request
+
+sparse_embedding:
+  enabled: true
+  host: 100.64.0.14            # Sparse embedding service (cortex)
+  port: 8091                   # Sparse embedding HTTP port
+
+vector_db:
+  host: 100.64.0.14           # Qdrant server (cortex)
+  port: 6333                  # Qdrant HTTP port
+  collection: recon_knowledge_hybrid # Collection name
+
+gemini:
+  model: gemini-2.0-flash     # Gemini model for enrichment
+  response_mime_type: application/json  # Force JSON output from Gemini
+
+web:
+  port: 8420                  # Dashboard HTTP port
+  host: 0.0.0.0               # Bind address (all interfaces)
+
+paths:
+  base: /opt/recon             # Application root
+  data: /opt/recon/data        # Data directory
+  text: /opt/recon/data/text   # Extracted text output (data/text/{hash}/page_NNNN.txt)
+  concepts: /opt/recon/data/concepts  # Enriched concept JSONs (data/concepts/{hash}/window_N.json)
+  intel: /opt/recon/data/intel # ARGUS intel feeds
+  logs: /opt/recon/logs        # Log files
+  db: /opt/recon/data/recon.db # SQLite database (WAL mode)
+
+book_server:
+  base_url: https://files.echo6.co   # Public URL prefix for PDF downloads
+  strip_prefix: /mnt/library         # Path prefix stripped when generating download URLs
+
+upload_paths:                  # Category -> filesystem path mapping for uploads
+  Survival Reference: /mnt/library/Survival-Companion-Library/Uploads
+  Military Doctrine: /mnt/library/Army_Pubs/Uploads
+  Gaming: /mnt/library/Gaming
+  Reference: /mnt/library/Reference
+  Technical: /mnt/library/Technical
+  default: /mnt/library        # Fallback for unknown categories
+
+web_scraper:
+  words_per_page: 2000         # Target words per page chunk for web content
+  fetch_timeout: 30            # HTTP request timeout (seconds)
+  rate_limit_delay: 1.0        # Delay between URL fetches (seconds)
+  max_batch_size: 50           # Max URLs per batch ingest
+  user_agent: "Mozilla/5.0 (compatible; RECON/1.0)"
+
+crawler:
+  user_agent: "Mozilla/5.0 (compatible; RECON/1.0)"
+  fetch_timeout: 30            # HTTP request timeout (seconds)
+  rate_limit_delay: 1.0        # Delay between page fetches (seconds)
+  max_pages: 500               # Max pages to discover per crawl
+  max_depth: 3                 # Max link-following depth (BFS only, not sitemap)
+  inter_site_cooldown: 30      # Seconds to wait between crawling different sites
+  recrawl_interval_days: 7     # Skip sites crawled within this many days
+
+  default_exclude:             # URL patterns always excluded from crawling
+    - /search
+    - /404
+    - /login
+    - /signup
+    - /auth/
+    - /api/
+    - /assets/
+    - /static/
+    - /cart
+    - /checkout
+    - /account
+    - /register
+    - /subscribe
+    - /membership
+    - /shop
+    - /store
+    - /product
+    - /wp-admin
+    - /feed
+    - /wp-json
+    - /xmlrpc
+    - /.well-known
+    - /cdn-cgi
+
+  # ─── Crawl Targets ─────────────────────────────────────────────
+  # Sites are crawled by the scheduler loop in tier order (1 first).
+  # Per-site delay overrides global rate_limit_delay for that site.
+  # Per-site max_pages/max_depth override global defaults.
+
+  # Disabled 2026-04-14 for refactor — see refactored-recon repo for context
+  sites: []
+
+  # sites:
+  #
+  # # ═══ TIER 1 — Free, authoritative, high-density ═══
+  #
+  # - url: https://hesperian.org/all-hesperian-health-guides
+  # category: Medical
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Free health guides — WTIND, midwives, community health"
+  #
+  # - url: https://swsbm.com
+  # category: Medical
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Michael Moore's entire free clinical herbal library — PDFs"
+  #
+  # - url: https://swsbm.henriettesherbal.com
+  # category: Medical
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Mirror of Moore's library — grab both"
+  #
+  # - url: https://nchfp.uga.edu
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 2.0
+  # tier: 1
+  # notes: "USDA canning/preservation safety authority"
+  #
+  # - url: https://extension.uidaho.edu
+  # category: Foundational Skills
+  # max_depth: 3
+  # delay: 2.0
+  # tier: 1
+  # notes: "Idaho-specific — soil, water, crops, livestock"
+  #
+  # - url: https://extension.usu.edu
+  # category: Foundational Skills
+  # max_depth: 3
+  # delay: 2.0
+  # tier: 1
+  # notes: "Utah State — Idaho-adjacent climate"
+  #
+  # - url: https://attra.ncat.org
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "ATTRA sustainable ag — hundreds of free publications"
+  #
+  # - url: https://pfaf.org
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Plants For A Future — 7,000+ edible/medicinal plant profiles"
+  #
+  # - url: https://eattheweeds.com
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Green Deane — 1,000+ foraging plant articles"
+  #
+  # - url: https://lowtechmagazine.com
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Exceptional low-tech systems analysis"
+  #
+  # - url: https://appropedia.org
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Appropriate technology wiki"
+  #
+  # - url: https://journeytoforever.org
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "VITA manuals, biodiesel, biogas, hand tools archive"
+  #
+  # - url: https://cd3wd.com
+  # category: Off-Grid Systems
+  # max_depth: 2
+  # delay: 3.0
+  # tier: 1
+  # notes: "1,050+ appropriate technology eBooks — index pages only"
+  #
+  # - url: https://practicalselfreliance.com
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Ashley Adamant — foraging, preservation, homesteading"
+  #
+  # - url: https://open.oregonstate.edu/permaculture
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Millison's free permaculture textbook"
+  #
+  # - url: https://open.oregonstate.edu/permaculturedesign
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Millison's advanced permaculture textbook"
+  #
+  # - url: https://mushroomexpert.com
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 1
+  # notes: "Michael Kuo — mushroom ID, taxonomy, regional coverage"
+  #
+  # # ═══ TIER 2 — High value, second pass ═══
+  #
+  # - url: https://motherearthnews.com
+  # category: Foundational Skills
+  # max_depth: 2
+  # max_pages: 200
+  # delay: 8.0
+  # tier: 2
+  # notes: "50 years of homesteading archive — large commercial site, be polite"
+  #
+  # - url: https://permacultureresearchinstitute.com
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 2
+  # notes: "Geoff Lawton — articles, case studies"
+  #
+  # - url: https://learnyourland.com
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 2
+  # notes: "Adam Haritan — foraging articles"
+  #
+  # - url: https://herbswithRosalee.com
+  # category: Medical
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 2
+  # notes: "Rosalee de la Foret — clinical herbalism articles"
+  #
+  # - url: https://commonwealthherbs.com
+  # category: Medical
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 2
+  # notes: "Katja and Ryn — clinical herbalism"
+  #
+  # - url: https://soilfoodweb.com
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 2
+  # notes: "Elaine Ingham soil biology — archive before it goes dark"
+  #
+  # - url: https://rocketstoves.com
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 2
+  # notes: "Ianto Evans — rocket mass heater designs and PDFs"
+  #
+  # - url: https://farmsteadmeatsmith.com
+  # category: Sustainment Systems
+  # max_depth: 2
+  # delay: 5.0
+  # tier: 2
+  # notes: "Brandon Sheard — butchering articles (free content only)"
+  #
+  # - url: https://deeranddeerhunting.com
+  # category: Sustainment Systems
+  # max_depth: 2
+  # delay: 5.0
+  # tier: 2
+  # notes: "Field dressing, processing, hunting technique library"
+  #
+  # # ═══ TIER 3 — Government (authoritative) ═══
+  #
+  # - url: https://plants.usda.gov
+  # category: Sustainment Systems
+  # max_depth: 2
+  # delay: 2.0
+  # tier: 3
+  # notes: "USDA native plant database"
+  #
+  # - url: https://ars.usda.gov
+  # category: Sustainment Systems
+  # max_depth: 2
+  # delay: 2.0
+  # tier: 3
+  # notes: "USDA Agricultural Research publications"
+  #
+  # - url: https://nrcs.usda.gov
+  # category: Off-Grid Systems
+  # max_depth: 2
+  # delay: 2.0
+  # tier: 3
+  # notes: "Soil surveys, conservation practice standards"
+  #
+  # - url: https://ready.gov
+  # category: Scenario Playbooks
+  # max_depth: 3
+  # delay: 2.0
+  # tier: 3
+  # notes: "FEMA emergency preparedness guides"
+  #
+  # - url: https://emergency.cdc.gov
+  # category: Medical
+  # max_depth: 3
+  # delay: 2.0
+  # tier: 3
+  # notes: "Public health emergency references"
+  #
+  # - url: https://agri.idaho.gov
+  # category: Foundational Skills
+  # max_depth: 2
+  # delay: 2.0
+  # tier: 3
+  # notes: "Idaho Dept of Agriculture — local relevance"
+  #
+  # - url: https://driveonwood.com
+  # category: Off-Grid Systems
+  # max_depth: 3
+  # delay: 3.0
+  # tier: 3
+  # notes: "Wood gasification — FEMA manual + modern improvements"
+  #
+  # # ═══ TIER 4 — Selective scrape (specific sections only) ═══
+  #
+  # - url: https://richsoil.com
+  # category: Off-Grid Systems
+  # max_depth: 2
+  # delay: 5.0
+  # tier: 4
+  # notes: "Paul Wheaton — rocket mass heaters, natural building"
+  #
+  # - url: https://wildfoodgirl.com
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 4
+  # notes: "Colorado foraging — Mountain West species"
+  #
+  # - url: https://foragersharvest.com
+  # category: Sustainment Systems
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 4
+  # notes: "Sam Thayer's site — articles"
+  #
+  # - url: https://mountainroseherbs.com/blog
+  # category: Medical
+  # max_depth: 2
+  # delay: 5.0
+  # tier: 4
+  # notes: "Herb profiles and preparations — blog section only"
+  #
+  # - url: https://herbalprepper.com
+  # category: Medical
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 4
+  # notes: "Cat Ellis — grid-down herbalism"
+  #
+  # - url: https://prolongedfieldcare.org
+  # category: Medical
+  # max_depth: 3
+  # delay: 5.0
+  # tier: 4
+  # notes: "PFC Collective — austere medical protocols"
+  #
+service:
+  scan_interval: 3600          # Seconds between library scans (1 hour)
+  stage_poll_interval: 30      # Seconds stages sleep when idle
+  progress_interval: 60        # Seconds between progress log lines
+
+peertube:
+  api_base: http://192.168.1.170       # Internal PeerTube API (CT 110 nginx)
+  public_url: https://stream.echo6.co  # Public URL for video links
+  fetch_timeout: 30                     # HTTP timeout for API/VTT requests
+  rate_limit_delay: 0.5                 # Delay between video ingestions (seconds)
+
+# Stream B: New Library Pipeline
+new_pipeline:
+  # Disabled 2026-04-14 for refactor — see refactored-recon repo for context
+  enabled: false
+  acquired_dir: /mnt/library/_acquired
+  ingest_dir: /mnt/library/_ingest
+  duplicates_dir: /mnt/library/_ingest/_duplicates
+  failed_dir: /mnt/library/_ingest/_failed
+  poll_interval: 60
+  mtime_stability: 10
+  pilot_domain: "Civil Organization"
+  spaces_to_underscores: true
+
+# Refactored pipeline configuration (2026-04-14)
+# See https://forge.echo6.co/matt/refactored-recon for design
+pipeline:
+  acquired_root: /opt/recon/data/acquired
+  processing_root: /opt/recon/data/processing
+  # Subfolder name -> processor module mapping
+  # Processors do not exist yet; this is scaffolding for Phase 3+
+  dispatch:
+    pdf: pdf_processor
+    stream: transcript_processor
+    html: html_processor
+  # mtime stability threshold for picking up files from acquired/
+  mtime_stability_seconds: 10

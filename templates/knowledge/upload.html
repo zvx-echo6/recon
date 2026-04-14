@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">Upload PDF</h3>
+<div class="panel">
+    <form id="upload-form" enctype="multipart/form-data">
+        <div class="mb-16">
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">PDF File</label>
+            <input type="file" name="file" accept=".pdf" id="upload-file"
+                style="background:#0a0a0a;border:1px solid #333;color:#c0c0c0;padding:8px;width:100%;font-family:inherit;">
+        </div>
+        <div class="mb-16">
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Category</label>
+            <input type="text" name="category" id="upload-category" list="cat-list" class="search-box"
+                placeholder="Select or type a category..." style="margin-bottom:0;">
+            <datalist id="cat-list">{{ options_html|safe }}</datalist>
+        </div>
+        <button type="submit" class="btn" id="upload-btn">Upload</button>
+        <span id="upload-status" style="margin-left:12px;font-size:12px;"></span>
+    </form>
+</div>
+<div id="upload-result" style="display:none;" class="panel"></div>
+
+<h3 class="section-title">Recent Documents</h3>
+<table>
+    <tr><th>Filename</th><th>Source</th><th>Status</th></tr>
+    {% for d in recent %}
+    <tr>
+        <td>{{ d.filename or '?' }}</td>
+        <td>{{ d.source or '' }}</td>
+        <td><span class="status status-{{ d.status or 'unknown' }}">{{ d.status or 'unknown' }}</span></td>
+    </tr>
+    {% endfor %}
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('upload-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var btn = document.getElementById('upload-btn');
+    var status = document.getElementById('upload-status');
+    var result = document.getElementById('upload-result');
+    var fileInput = document.getElementById('upload-file');
+    var category = document.getElementById('upload-category').value;
+
+    if (!fileInput.files.length) {
+        status.style.color = '#ff4444';
+        status.textContent = 'No file selected';
+        return;
+    }
+
+    btn.disabled = true;
+    status.style.color = '#ffa500';
+    status.textContent = 'Uploading...';
+    result.style.display = 'none';
+
+    var formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('category', category);
+
+    try {
+        var resp = await fetch('/api/upload', { method: 'POST', body: formData });
+        var data = await resp.json();
+        if (resp.ok) {
+            status.style.color = '#00ff41';
+            status.textContent = 'Upload successful';
+            result.style.display = 'block';
+            result.innerHTML = '<span style="color:#00ff41;">Queued for processing</span><br>' +
+                '<span class="text-dim">Hash: ' + data.hash + '</span><br>' +
+                '<span class="text-dim">File: ' + data.filename + '</span><br>' +
+                '<span class="text-dim">Category: ' + data.source + '/' + data.category + '</span>';
+            fileInput.value = '';
+        } else {
+            status.style.color = '#ff4444';
+            status.textContent = data.error || 'Upload failed';
+        }
+    } catch (err) {
+        status.style.color = '#ff4444';
+        status.textContent = 'Network error: ' + err.message;
+    }
+    btn.disabled = false;
+});
+</script>
+{% endblock %}

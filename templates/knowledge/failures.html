@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 style="color:#ff4444;margin-bottom:16px;">Failed Documents</h3>
+{% if not failures %}
+<p class="text-dim">No failures.</p>
+{% else %}
+<div style="margin-bottom:16px;">
+    <button class="btn" id="retry-all-btn" onclick="retryAll()">Retry All ({{ failures|length }})</button>
+    <span id="retry-all-status" style="margin-left:12px;font-size:12px;"></span>
+</div>
+<table>
+    <tr><th>Filename</th><th>Error</th><th>Age</th><th>Retries</th><th>Actions</th></tr>
+    {% for f in failures %}
+    <tr>
+        <td>{{ f.filename or '?' }}</td>
+        <td style="color:#ff4444;font-size:11px;">{{ (f.error_message or 'unknown')[:100] }}</td>
+        <td class="text-dim text-xs">{{ f.discovered_at or '' }}</td>
+        <td>{{ f.retry_count or 0 }}</td>
+        <td>
+            <form method="post" action="/api/retry/{{ f.hash }}" style="display:inline;">
+                <button class="btn" type="submit">Retry</button>
+            </form>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+async function retryAll() {
+    var btn = document.getElementById('retry-all-btn');
+    var status = document.getElementById('retry-all-status');
+    if (!confirm('Retry all {{ failures|length }} failed documents?')) return;
+    btn.disabled = true;
+    status.style.color = '#ffa500';
+    status.textContent = 'Retrying...';
+    try {
+        var resp = await fetch('/api/retry-all', {method: 'POST'});
+        var data = await resp.json();
+        if (resp.ok) {
+            status.style.color = '#00ff41';
+            status.textContent = 'Retried ' + data.count + ' documents';
+            setTimeout(function() { location.reload(); }, 2000);
+        } else {
+            status.style.color = '#ff4444';
+            status.textContent = data.error || 'Failed';
+        }
+    } catch(e) {
+        status.style.color = '#ff4444';
+        status.textContent = 'Error: ' + e.message;
+    }
+    btn.disabled = false;
+}
+</script>
+{% endblock %}

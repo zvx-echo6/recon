@@ -1,0 +1,26 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets
+.env
+
+# Runtime data
+data/
+logs/
+pipeline.log
+recon.db
+
+# Backups
+*.bak
+*.bak-*
+*.bak.*
+*.bak2.*
+
+# Junk
+-.png
+
+# OS
+.DS_Store

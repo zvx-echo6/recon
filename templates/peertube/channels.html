@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">PeerTube Channels</h3>
+
+<div class="stat-grid" id="pt-stats" style="margin-bottom:24px;">
+    <div class="stat-card"><div class="value" id="pt-total-ch">—</div><div class="label">Channels</div></div>
+    <div class="stat-card"><div class="value" id="pt-total-vid">—</div><div class="label">Videos</div></div>
+    <div class="stat-card"><div class="value" id="pt-dl-status">—</div><div class="label">Downloader</div></div>
+</div>
+
+<div class="panel">
+    <div class="flex gap-8" style="flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+        <div style="flex:1;min-width:250px;">
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">YouTube URL</label>
+            <input type="text" id="pt-yt-url" class="search-box" placeholder="https://www.youtube.com/@ChannelName" style="margin-bottom:0;width:100%;">
+        </div>
+        <div style="min-width:150px;">
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Category</label>
+            <input type="text" id="pt-category" list="pt-cat-list" class="search-box" placeholder="e.g. OPSEC/Privacy" style="margin-bottom:0;width:100%;">
+            <datalist id="pt-cat-list"></datalist>
+        </div>
+        <div style="min-width:60px;">
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Priority</label>
+            <select id="pt-priority" style="background:#0a0a0a;border:1px solid #333;color:#c0c0c0;padding:6px 10px;font-family:inherit;font-size:12px;width:100%;">
+                <option value="M">M</option>
+                <option value="H">H</option>
+                <option value="L">L</option>
+            </select>
+        </div>
+        <button class="btn" id="pt-add-btn" onclick="addChannel()">Add Channel</button>
+    </div>
+    <div id="pt-feedback" style="font-size:12px;min-height:18px;"></div>
+</div>
+
+<div style="background:#111;border:1px solid #222;overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;" id="pt-channel-table">
+        <thead>
+            <tr style="border-bottom:1px solid #222;">
+                <th style="text-align:left;padding:10px;">Channel</th>
+                <th style="text-align:center;padding:10px;">Videos</th>
+                <th style="text-align:left;padding:10px;">Category</th>
+                <th style="text-align:center;padding:10px;">Pri</th>
+                <th style="text-align:center;padding:10px;">Status</th>
+                <th style="text-align:center;padding:10px;width:60px;"></th>
+            </tr>
+        </thead>
+        <tbody id="pt-channel-tbody"><tr><td colspan="6" style="text-align:center;padding:20px;color:#555;">Loading...</td></tr></tbody>
+    </table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/channels.js"></script>
+{% endblock %}

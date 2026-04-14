@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">NordVPN</h3>
+<div class="panel">
+    <div id="vpn-status" style="margin-bottom:16px;font-size:12px;color:#666;">Loading VPN status...</div>
+    <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:12px;">
+        <button class="btn" onclick="vpnRotate()" id="vpn-rotate-btn">Rotate</button>
+        <button class="btn" onclick="vpnDisconnect()" id="vpn-disconnect-btn">Disconnect</button>
+        <select id="vpn-country" style="background:#0a0a0a;border:1px solid #333;color:#c0c0c0;padding:6px;font-family:inherit;font-size:12px;">
+            <option value="United_States">United States</option>
+            <option value="Canada">Canada</option>
+            <option value="United_Kingdom">United Kingdom</option>
+            <option value="Germany">Germany</option>
+            <option value="Netherlands">Netherlands</option>
+            <option value="Sweden">Sweden</option>
+        </select>
+        <button class="btn" onclick="vpnConnect()" id="vpn-connect-btn">Connect</button>
+    </div>
+    <span id="vpn-action-status" style="font-size:12px;"></span>
+    <details style="margin-top:16px;">
+        <summary class="text-faint" style="cursor:pointer;font-size:11px;">Setup (one-time)</summary>
+        <div style="margin-top:8px;">
+            <input type="password" id="vpn-token" placeholder="NordVPN token"
+                style="background:#0a0a0a;border:1px solid #333;color:#c0c0c0;padding:6px;width:300px;font-family:inherit;font-size:12px;">
+            <button class="btn" onclick="vpnLogin()">Login</button>
+            <span id="vpn-login-status" style="font-size:11px;margin-left:8px;"></span>
+        </div>
+    </details>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadVpnStatus() {
+    try {
+        var resp = await fetch('/api/vpn/status');
+        var data = await resp.json();
+        if (resp.ok) {
+            var dot = data.connected ? '<span style="color:#00ff41;">&#9679;</span>' : '<span style="color:#ff4444;">&#9679;</span>';
+            var html = dot + ' ' + (data.connected ? 'Connected' : 'Disconnected');
+            if (data.connected) {
+                html += ' &mdash; <span style="color:#00ff41;">' + data.country + '</span>';
+                html += ' <span class="text-faint">(' + data.ip + ')</span>';
+            }
+            if (data.rotations_today > 0) {
+                html += '<br><span class="text-faint">Rotations today: ' + data.rotations_today + '</span>';
+            }
+            document.getElementById('vpn-status').innerHTML = html;
+        }
+    } catch(e) {
+        document.getElementById('vpn-status').innerHTML = '<span class="text-red">Error: ' + e.message + '</span>';
+    }
+}
+
+async function vpnAction(url, opts, statusEl) {
+    var el = document.getElementById(statusEl || 'vpn-action-status');
+    el.style.color = '#ffa500';
+    el.textContent = 'Working...';
+    try {
+        var resp = await fetch(url, opts);
+        var data = await resp.json();
+        if (data.ok) {
+            el.style.color = '#00ff41';
+            el.textContent = data.country ? (data.country + ' (' + data.ip + ')') : (data.message || 'Done');
+        } else {
+            el.style.color = '#ff4444';
+            el.textContent = data.error || data.message || 'Failed';
+        }
+        loadVpnStatus();
+    } catch(e) {
+        el.style.color = '#ff4444';
+        el.textContent = 'Error: ' + e.message;
+    }
+}
+
+function vpnRotate() { vpnAction('/api/vpn/rotate', {method:'POST'}); }
+function vpnDisconnect() { vpnAction('/api/vpn/disconnect', {method:'POST'}); }
+function vpnConnect() {
+    var country = document.getElementById('vpn-country').value;
+    vpnAction('/api/vpn/connect', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({country: country})
+    });
+}
+function vpnLogin() {
+    var token = document.getElementById('vpn-token').value;
+    if (!token) return;
+    vpnAction('/api/vpn/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({token: token})
+    }, 'vpn-login-status');
+}
+
+loadVpnStatus();
+</script>
+{% endblock %}

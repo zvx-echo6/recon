@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="kb-dashboard">
+    <div class="stat-grid">
+        <div class="stat-card"><div class="label">Catalogued</div><div class="value" id="kv-catalogued">—</div><div class="sublabel">total known documents</div></div>
+        <div class="stat-card"><div class="label">In Pipeline</div><div class="value" id="kv-pipeline">—</div><div class="sublabel" id="kv-pipeline-sub">processing</div></div>
+        <div class="stat-card"><div class="label">Complete</div><div class="value" id="kv-complete">—</div><div class="sublabel">in Qdrant</div></div>
+        <div class="stat-card"><div class="label">Failed</div><div class="value" id="kv-failed">—</div><div class="sublabel">&nbsp;</div></div>
+    </div>
+
+    <div class="mb-24">
+        <div class="flex-between mb-16" style="margin-bottom:4px;font-size:11px;color:#888;">
+            <span id="progress-label">Pipeline Progress</span>
+            <span id="progress-pct"></span>
+        </div>
+        <div id="progress-bar" class="pipeline-bar"></div>
+        <div id="progress-legend" class="pipeline-legend"></div>
+    </div>
+
+    <div class="stat-grid grid-3">
+        <div class="stat-card"><div class="label">Concepts</div><div class="value" id="kv-concepts">—</div><div class="sublabel">extracted</div></div>
+        <div class="stat-card"><div class="label">Vectors</div><div class="value" id="kv-vectors">—</div><div class="sublabel">in Qdrant</div></div>
+        <div class="stat-card"><div class="label">Pages</div><div class="value" id="kv-pages">—</div><div class="sublabel">processed</div></div>
+    </div>
+
+    <div id="pipeline-activity" class="panel" style="display:none;">
+        <h3 style="color:#ffa500;font-size:13px;margin-bottom:8px;">Pipeline Activity</h3>
+        <div id="activity-content" style="font-size:12px;color:#ccc;"></div>
+    </div>
+
+    <div id="qdrant-health" class="panel" style="padding:10px 16px;font-size:12px;color:#888;">
+        Qdrant: <span id="qdrant-status">checking...</span>
+    </div>
+
+    <div id="kb-chart-container" class="panel" style="display:none;">
+        <h3 class="section-title" style="margin-bottom:8px;">Pipeline Activity (24h)</h3>
+        <canvas id="kb-chart" width="800" height="200" style="width:100%;height:200px;"></canvas>
+    </div>
+
+    <h3 class="section-title" id="sources-toggle" style="cursor:pointer;user-select:none;"><span id="sources-arrow">&#9654;</span> Sources</h3>
+    <table>
+        <thead id="sources-thead" style="display:none;"><tr><th>Source</th><th>Type</th><th>Catalogued</th><th>Complete</th><th>In Pipeline</th><th>Progress</th><th>Concepts</th><th>Vectors</th></tr></thead>
+        <tbody id="sources-tbody" style="display:none;"><tr><td colspan="8" class="text-dim">Loading...</td></tr></tbody>
+        <tfoot id="sources-tfoot"></tfoot>
+    </table>
+
+    <div class="grid-2 mt-24">
+        <div>
+            <h3 class="section-title">Domain Distribution</h3>
+            <div id="domain-bars" class="text-small">Loading...</div>
+        </div>
+        <div>
+            <h3 class="section-title">Knowledge Type</h3>
+            <div id="knowledge-type-bars" class="text-small">Loading...</div>
+            <div id="knowledge-type-migration" class="text-small" style="margin-top:6px;color:#666;font-size:11px;"></div>
+            <h3 class="section-title" style="margin-top:16px;">Complexity</h3>
+            <div id="complexity-bars" class="text-small">Loading...</div>
+            <div id="complexity-migration" class="text-small" style="margin-top:6px;color:#666;font-size:11px;"></div>
+        </div>
+    </div>
+
+    <h3 class="section-title mt-24">Recently Completed</h3>
+    <table>
+        <thead><tr><th>Title</th><th>Type</th><th>Concepts</th><th>Vectors</th></tr></thead>
+        <tbody id="recent-tbody"><tr><td colspan="4" class="text-dim">Loading...</td></tr></tbody>
+    </table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/dashboard.js"></script>
+{% endblock %}

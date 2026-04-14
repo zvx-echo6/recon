@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">Semantic Search</h3>
+<form method="get" action="/search">
+    <input type="text" name="q" class="search-box" placeholder="Search the knowledge base..." value="{{ query or '' }}" autofocus>
+</form>
+
+{% if not query %}
+<p class="text-dim text-small" style="margin-top:8px;">Enter a query to search across all embedded concepts.</p>
+{% elif results is defined %}
+<p class="text-dim text-small mb-16">{{ results|length }} results for: <strong class="text-green">{{ query }}</strong></p>
+
+{% for r in results %}
+<div class="result">
+    <span class="score">{{ '%.4f'|format(r.score) }}</span>
+    <div class="title">{{ r.title }}</div>
+    <div class="meta">
+        {{ r.citation }}
+        {% if r.download_url %}
+            {% if r.source_type == 'web' or (r.download_url.startswith('http') and 'files.echo6.co' not in r.download_url) %}
+            | <a href="{{ r.download_url }}" target="_blank" style="color:#00bfff;text-decoration:none;">Web</a>
+            {% else %}
+            | <a href="{{ r.download_url }}" style="color:#00bfff;text-decoration:none;">PDF</a>
+            {% endif %}
+        {% endif %}
+        {% if r.knowledge_type %}| {{ r.knowledge_type }}{% endif %}
+        {% if r.complexity %}/ {{ r.complexity }}{% endif %}
+    </div>
+    <div class="content-text">{{ r.summary }}</div>
+    <div style="margin-top:6px;">
+        {% for d in r.domains %}
+        <span class="domain-tag">{{ d }}</span>
+        {% endfor %}
+    </div>
+</div>
+{% endfor %}
+
+{% elif error %}
+<p style="color:#ff4444;">Search error: {{ error }}</p>
+{% endif %}
+{% endblock %}

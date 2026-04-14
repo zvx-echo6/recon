@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="pt-dashboard">
+    <div class="stat-grid" style="grid-template-columns:repeat(6, 1fr);">
+        <div class="stat-card"><div class="label">Published</div><div class="value" id="pt-published">—</div></div>
+        <div class="stat-card"><div class="label">In Pipeline</div><div class="value" id="pt-in-pipeline">—</div></div>
+        <div class="stat-card"><div class="label">Failed</div><div class="value" id="pt-failed">—</div></div>
+        <div class="stat-card"><div class="label">Import Rate</div><div class="value" id="pt-import-rate">—</div><div class="sublabel">/hour</div></div>
+        <div class="stat-card"><div class="label">GPU Util</div><div class="value" id="pt-gpu-util">—</div><div class="sublabel">%</div></div>
+        <div class="stat-card"><div class="label">GPU Temp</div><div class="value" id="pt-gpu-temp">—</div><div class="sublabel">&deg;C</div></div>
+    </div>
+
+    <div class="mb-24">
+        <div class="flex-between" style="margin-bottom:4px;font-size:11px;color:#888;">
+            <span>Pipeline Flow</span>
+            <span id="pt-pipeline-summary"></span>
+        </div>
+        <div id="pt-pipeline-bar" class="pipeline-bar"></div>
+        <div id="pt-pipeline-legend" class="pipeline-legend"></div>
+    </div>
+
+    <div class="svc-row">
+        <div class="svc-item"><span class="svc-dot unknown" id="svc-downloader"></span>Downloader</div>
+        <div class="svc-item"><span class="svc-dot unknown" id="svc-importer"></span>Importer</div>
+        <div class="svc-item"><span class="svc-dot unknown" id="svc-transcoder"></span>Transcoder</div>
+        <div class="svc-item"><span class="svc-dot unknown" id="svc-runner"></span>Runner</div>
+    </div>
+
+    <div id="pt-gpu-panel" class="panel" style="display:none;">
+        <h3 class="section-title" style="margin-bottom:8px;">GPU Status</h3>
+        <div id="pt-gpu-detail" class="text-small text-muted"></div>
+    </div>
+
+    <div id="pt-chart-container" class="panel" style="display:none;">
+        <h3 class="section-title" style="margin-bottom:8px;">Pipeline Activity (24h)</h3>
+        <canvas id="pt-chart" width="800" height="200" style="width:100%;height:200px;"></canvas>
+    </div>
+
+    <div id="pt-storage" class="panel">
+        <h3 class="section-title" style="margin-bottom:12px;">Pipeline Storage</h3>
+        <div id="pt-storage-content" class="text-small text-muted">Loading...</div>
+    </div>
+
+    <details id="pt-errors-panel" class="errors-panel panel">
+        <summary>Recent Errors (<span id="pt-error-count">0</span>)</summary>
+        <div id="pt-errors-content" style="margin-top:8px;"></div>
+    </details>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/peertube.js"></script>
+{% endblock %}

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">Document Catalogue</h3>
+
+{% if sources %}
+<div class="mb-16">
+    <a href="/catalogue" class="btn{% if not current_source %} active{% endif %}" style="margin-right:4px;">All</a>
+    {% for s in sources %}
+    <a href="/catalogue?source={{ s }}" class="btn{% if current_source == s %} active{% endif %}" style="margin-right:4px;">{{ s }}</a>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="text-dim text-xs mb-16">
+    Showing {{ docs|length }}{% if total_count %} of {{ total_count }}{% endif %} documents
+    {% if current_source %} in <strong>{{ current_source }}</strong>{% endif %}
+    (page {{ page }} of {{ total_pages }})
+</div>
+
+<table>
+    <tr><th>Filename</th><th>Source</th><th>Status</th><th>Pages</th><th>Concepts</th><th>Vectors</th></tr>
+    {% for d in docs %}
+    <tr>
+        <td>{{ d.filename or '?' }}</td>
+        <td>{{ d.source or '' }}</td>
+        <td><span class="status status-{{ d.status or 'unknown' }}">{{ d.status or 'unknown' }}</span></td>
+        <td>{{ d.pages_extracted or 0 }}</td>
+        <td>{{ d.concepts_extracted or 0 }}</td>
+        <td>{{ d.vectors_inserted or 0 }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="/catalogue?page={{ page - 1 }}{% if current_source %}&source={{ current_source }}{% endif %}&per_page={{ per_page }}">&laquo;</a>
+    {% endif %}
+    {% for p in range(1, total_pages + 1) %}
+        {% if p == page %}
+        <span class="current">{{ p }}</span>
+        {% elif p <= 3 or p > total_pages - 3 or (p >= page - 2 and p <= page + 2) %}
+        <a href="/catalogue?page={{ p }}{% if current_source %}&source={{ current_source }}{% endif %}&per_page={{ per_page }}">{{ p }}</a>
+        {% elif p == 4 or p == total_pages - 3 %}
+        <span class="text-dim">...</span>
+        {% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+    <a href="/catalogue?page={{ page + 1 }}{% if current_source %}&source={{ current_source }}{% endif %}&per_page={{ per_page }}">&raquo;</a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

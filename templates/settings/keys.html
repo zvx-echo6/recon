@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">API Keys</h3>
+<div style="margin-bottom:20px;">
+    <button class="btn" onclick="validateAll()" id="btn-validate">Validate All</button>
+    <button class="btn" onclick="reloadKeys()" style="margin-left:8px;">Reload from .env</button>
+    <button class="btn btn-warn" onclick="restartService()" style="margin-left:8px;">Restart Service</button>
+    <span id="validate-status" style="margin-left:12px;color:#666;font-size:12px;"></span>
+</div>
+<table id="keys-table">
+    <tr><th>#</th><th>Key</th><th>Status</th><th>Calls</th><th>Errors</th><th>Last Used</th><th>Actions</th></tr>
+    {% for k in keys_data %}
+    <tr id="key-row-{{ k.index }}">
+        <td>{{ k.index + 1 }}</td>
+        <td class="mono text-small">{{ k.masked }}</td>
+        <td>
+            {% if k.valid is true %}
+            <span class="text-green">Valid</span>
+            {% elif k.valid is false %}
+            <span class="text-red">Invalid</span>
+            {% else %}
+            <span class="text-dim">&mdash;</span>
+            {% endif %}
+        </td>
+        <td>{{ k.calls }}</td>
+        <td class="{% if k.errors %}text-red{% else %}text-muted{% endif %}">{{ k.errors }}</td>
+        <td class="text-dim text-xs">{{ k.last_used or '&mdash;' }}</td>
+        <td>
+            <button class="btn text-xs" onclick="validateKey({{ k.index }})">Test</button>
+            <button class="btn btn-danger text-xs" onclick="removeKey({{ k.index }})">Remove</button>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+
+<div style="margin-top:24px;border-top:1px solid #222;padding-top:16px;">
+    <h4 class="text-muted" style="margin-bottom:12px;">Add Key</h4>
+    <div class="flex gap-8" style="align-items:center;">
+        <input type="text" id="new-key" placeholder="Paste Gemini API key..."
+            style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:8px 12px;border-radius:4px;font-family:monospace;font-size:13px;">
+        <button class="btn" onclick="addKey()">Add</button>
+    </div>
+    <div id="add-result" style="margin-top:8px;font-size:12px;"></div>
+</div>
+
+<div style="margin-top:24px;border-top:1px solid #222;padding-top:16px;">
+    <h4 class="text-muted" style="margin-bottom:12px;">Replace Key</h4>
+    <div class="flex gap-8" style="align-items:center;">
+        <input type="number" id="replace-index" placeholder="#" min="0" max="9"
+            style="width:50px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:8px;border-radius:4px;text-align:center;">
+        <input type="text" id="replace-key" placeholder="New Gemini API key..."
+            style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:8px 12px;border-radius:4px;font-family:monospace;font-size:13px;">
+        <button class="btn" onclick="replaceKey()">Replace</button>
+    </div>
+    <div id="replace-result" style="margin-top:8px;font-size:12px;"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function validateAll() {
+    document.getElementById('btn-validate').disabled = true;
+    document.getElementById('validate-status').textContent = 'Validating...';
+    try {
+        var r = await fetch('/api/keys/validate', {method:'POST'});
+        var data = await r.json();
+        document.getElementById('validate-status').textContent = 'Done — ' + data.results.filter(function(r){return r.valid;}).length + '/' + data.results.length + ' valid';
+        setTimeout(function() { location.reload(); }, 1000);
+    } catch(e) {
+        document.getElementById('validate-status').textContent = 'Error: ' + e;
+    }
+    document.getElementById('btn-validate').disabled = false;
+}
+
+async function validateKey(idx) {
+    try {
+        var r = await fetch('/api/keys/' + idx + '/validate', {method:'POST'});
+        var data = await r.json();
+        alert('Key ' + (idx+1) + ': ' + data.message);
+        location.reload();
+    } catch(e) { alert('Error: ' + e); }
+}
+
+async function removeKey(idx) {
+    if (!confirm('Remove key ' + (idx+1) + '? Pipeline needs at least 1 key.')) return;
+    try {
+        var r = await fetch('/api/keys/' + idx, {method:'DELETE'});
+        var data = await r.json();
+        if (data.error) { alert(data.error); return; }
+        location.reload();
+    } catch(e) { alert('Error: ' + e); }
+}
+
+async function addKey() {
+    var key = document.getElementById('new-key').value.trim();
+    if (!key) return;
+    try {
+        var r = await fetch('/api/keys', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:key})});
+        var data = await r.json();
+        if (data.error) { document.getElementById('add-result').innerHTML = '<span class="text-red">' + data.error + '</span>'; return; }
+        document.getElementById('add-result').innerHTML = '<span class="text-green">Added at position ' + (data.index+1) + '</span>';
+        setTimeout(function() { location.reload(); }, 1000);
+    } catch(e) { document.getElementById('add-result').innerHTML = '<span class="text-red">' + e + '</span>'; }
+}
+
+async function replaceKey() {
+    var idx = parseInt(document.getElementById('replace-index').value) - 1;
+    var key = document.getElementById('replace-key').value.trim();
+    if (isNaN(idx) || !key) return;
+    try {
+        var r = await fetch('/api/keys/' + idx, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:key})});
+        var data = await r.json();
+        if (data.error) { document.getElementById('replace-result').innerHTML = '<span class="text-red">' + data.error + '</span>'; return; }
+        document.getElementById('replace-result').innerHTML = '<span class="text-green">Replaced key ' + (idx+1) + '</span>';
+        setTimeout(function() { location.reload(); }, 1000);
+    } catch(e) { document.getElementById('replace-result').innerHTML = '<span class="text-red">' + e + '</span>'; }
+}
+
+async function restartService() {
+    if (!confirm('Restart RECON service? Pipeline will pause for ~10 seconds.')) return;
+    document.getElementById('validate-status').textContent = 'Restarting...';
+    try {
+        await fetch('/api/service/restart', {method:'POST'});
+    } catch(e) {}
+    document.getElementById('validate-status').innerHTML = '<span style="color:#ff8800;">Restarting... page will reload in 10s</span>';
+    setTimeout(function() { location.reload(); }, 30000);
+}
+
+async function reloadKeys() {
+    try {
+        var r = await fetch('/api/keys/reload', {method:'POST'});
+        var data = await r.json();
+        alert('Reloaded ' + data.count + ' key(s) from .env');
+        location.reload();
+    } catch(e) { alert('Error: ' + e); }
+}
+</script>
+{% endblock %}

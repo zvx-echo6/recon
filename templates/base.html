@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>RECON // Aurora Intelligence Pipeline{% if page_title %} — {{ page_title }}{% endif %}</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/static/css/recon.css">
+</head>
+<body>
+<div class="header">
+    <div class="header-left"><h1><span id="heartbeat" class="heartbeat"></span>RECON</h1><span class="header-subtitle">AURORA INTELLIGENCE PIPELINE</span></div>
+    <div class="flex gap-16">
+        <div class="quick-stats">
+            <span>Docs: <span id="qs-docs">—</span></span>
+            <span>Vectors: <span id="qs-vectors">—</span></span>
+            <span>Pipeline: <span id="qs-pipeline">—</span></span>
+        </div>
+    </div>
+</div>
+<div class="nav-domain">
+    <a href="/"{% if domain == 'knowledge' %} class="active"{% endif %}>Knowledge</a>
+    <a href="/peertube"{% if domain == 'peertube' %} class="active"{% endif %}>PeerTube</a>
+    <a href="/search"{% if domain == 'search' %} class="active"{% endif %}>Search</a>
+    <a href="/settings/keys"{% if domain == 'settings' %} class="active"{% endif %}>Settings</a>
+</div>
+{% if subnav %}
+<div class="nav-sub">
+    {% for item in subnav %}
+    <a href="{{ item.href }}"{% if item.href == active_page %} class="active"{% endif %}>{{ item.label }}</a>
+    {% endfor %}
+</div>
+{% endif %}
+<div class="content" id="main">
+    {% block content %}{% endblock %}
+</div>
+<script src="/static/js/common.js"></script>
+<script>document.addEventListener('DOMContentLoaded', function() { RECON.loadQuickStats(); });</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

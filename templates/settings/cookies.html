@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="section-title mb-16">YouTube Cookies</h3>
+<div class="panel">
+    <div id="cookie-status" style="margin-bottom:16px;font-size:12px;color:#666;">Loading cookie status...</div>
+    <div class="mb-16">
+        <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Cookies.txt File (Netscape format)</label>
+        <input type="file" id="cookie-file" accept=".txt"
+            style="background:#0a0a0a;border:1px solid #333;color:#c0c0c0;padding:8px;width:100%;font-family:inherit;">
+    </div>
+    <button class="btn" id="cookie-btn" onclick="uploadCookies()">Upload Cookies</button>
+    <span id="cookie-upload-status" style="margin-left:12px;font-size:12px;"></span>
+    <div id="cookie-result" style="display:none;background:#0a0a0a;border:1px solid #222;padding:12px;margin-top:16px;font-size:11px;white-space:pre-wrap;color:#888;max-height:200px;overflow-y:auto;"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadCookieStatus() {
+    try {
+        var resp = await fetch('/api/cookies/status');
+        var data = await resp.json();
+        if (resp.ok) {
+            var age = data.age_hours;
+            var ageStr, ageColor;
+            if (age < 24) {
+                ageStr = Math.round(age) + ' hours ago';
+                ageColor = '#00ff41';
+            } else {
+                var days = Math.round(age / 24);
+                ageStr = days + ' days ago';
+                ageColor = days > 14 ? '#ff4444' : days > 7 ? '#ffa500' : '#00ff41';
+            }
+            var html = '<span style="color:' + ageColor + ';">Last updated: ' + ageStr + '</span>';
+            if (data.is_stale) {
+                html += ' <span style="color:#ff4444;font-weight:bold;">[STALE - cookies likely expired]</span>';
+            }
+            if (data.recent_rate_limits > 0) {
+                html += '<br><span style="color:#ffa500;">YouTube rate limits in last 30min: ' + data.recent_rate_limits + '</span>';
+            }
+            html += '<br><span class="text-faint">Downloader: ' + (data.downloader_active ? 'active' : 'stopped') + '</span>';
+            document.getElementById('cookie-status').innerHTML = html;
+        } else {
+            document.getElementById('cookie-status').innerHTML = '<span class="text-red">Could not check cookie status</span>';
+        }
+    } catch(e) {
+        document.getElementById('cookie-status').innerHTML = '<span class="text-red">Error: ' + e.message + '</span>';
+    }
+}
+
+async function uploadCookies() {
+    var fileInput = document.getElementById('cookie-file');
+    var btn = document.getElementById('cookie-btn');
+    var status = document.getElementById('cookie-upload-status');
+    var result = document.getElementById('cookie-result');
+    if (!fileInput.files.length) {
+        status.style.color = '#ff4444';
+        status.textContent = 'No file selected';
+        return;
+    }
+    btn.disabled = true;
+    status.style.color = '#ffa500';
+    status.textContent = 'Uploading and testing cookies...';
+    result.style.display = 'none';
+    var formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    try {
+        var resp = await fetch('/api/cookies/upload', { method: 'POST', body: formData });
+        var data = await resp.json();
+        if (data.ok) {
+            status.style.color = '#00ff41';
+            status.textContent = 'Cookies updated and verified';
+            result.style.display = 'block';
+            result.style.borderColor = '#00ff41';
+            result.innerHTML = '<span style="color:#00ff41;">SUCCESS</span><br>' + (data.test_output || '') + '<br>Data lines: ' + data.data_lines;
+            loadCookieStatus();
+        } else {
+            status.style.color = data.error ? '#ff4444' : '#ffa500';
+            status.textContent = data.error || data.message || 'Upload issue';
+            if (data.test_output) {
+                result.style.display = 'block';
+                result.style.borderColor = '#ff4444';
+                result.textContent = data.test_output;
+            }
+        }
+    } catch(e) {
+        status.style.color = '#ff4444';
+        status.textContent = 'Network error: ' + e.message;
+    }
+    btn.disabled = false;
+}
+
+loadCookieStatus();
+</script>
+{% endblock %}
