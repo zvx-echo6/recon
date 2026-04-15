@@ -437,5 +437,6 @@ pipeline:
     pdf: pdf_processor
     stream: transcript_processor
     html: html_processor
+    text: text_processor
   # mtime stability threshold for picking up files from acquired/
   mtime_stability_seconds: 10
