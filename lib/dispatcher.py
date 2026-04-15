@@ -7,10 +7,12 @@ hands them to the appropriate processor's pre_flight().
 
 Phase 3: importable one-shot dispatcher. Service-loop integration in Phase 5.
 Phase 4: sidecar is optional (PDFs may arrive without .meta.json).
+Phase 6f-2: format normalizer converts non-standard formats to PDF before dispatch.
 """
 import importlib
 import logging
 import os
+import subprocess
 import time
 
 from .utils import get_config
@@ -20,6 +22,9 @@ logger = logging.getLogger("recon.dispatcher")
 
 # Content file extensions recognized by the dispatcher
 CONTENT_EXTENSIONS = {'.txt', '.vtt', '.html', '.pdf'}
+
+# Non-standard formats that can be converted to PDF before dispatch
+CONVERTIBLE_EXTENSIONS = {'.epub', '.mobi', '.doc', '.docx'}
 
 
 def _load_processor(processor_name):
@@ -33,6 +38,63 @@ def _load_processor(processor_name):
     except ImportError as e:
         logger.error("Failed to import processor %s: %s", processor_name, e)
         return None
+
+
+def _normalize_formats(subfolder_path):
+    """Convert non-standard document formats to PDF before dispatch.
+
+    Walks the subfolder for files with convertible extensions (.epub, .mobi,
+    .doc, .docx). Converts each to PDF using the appropriate tool, then
+    deletes the original.
+
+    Returns count of files converted.
+    """
+    if not os.path.isdir(subfolder_path):
+        return 0
+
+    converted = 0
+
+    for fname in sorted(os.listdir(subfolder_path)):
+        stem, ext = os.path.splitext(fname)
+        if ext.lower() not in CONVERTIBLE_EXTENSIONS:
+            continue
+
+        source = os.path.join(subfolder_path, fname)
+        target = os.path.join(subfolder_path, stem + '.pdf')
+
+        if os.path.exists(target):
+            logger.debug("Target PDF already exists, skipping: %s", fname)
+            continue
+
+        try:
+            if ext.lower() in ('.epub', '.mobi'):
+                subprocess.run(
+                    ['ebook-convert', source, target],
+                    capture_output=True, check=True, timeout=300,
+                )
+            elif ext.lower() in ('.doc', '.docx'):
+                subprocess.run(
+                    ['libreoffice', '--headless', '--convert-to', 'pdf',
+                     '--outdir', subfolder_path, source],
+                    capture_output=True, check=True, timeout=300,
+                )
+
+            if os.path.isfile(target) and os.path.getsize(target) > 0:
+                os.remove(source)
+                converted += 1
+                logger.info("Converted %s -> %s.pdf", fname, stem)
+            else:
+                logger.warning("Conversion produced no output: %s", fname)
+
+        except subprocess.TimeoutExpired:
+            logger.error("Conversion timed out: %s", fname)
+        except subprocess.CalledProcessError as e:
+            logger.error("Conversion failed for %s: %s", fname,
+                         e.stderr.decode(errors='replace')[:200] if e.stderr else str(e))
+        except Exception as e:
+            logger.error("Unexpected error converting %s: %s", fname, e)
+
+    return converted
 
 
 def _find_pairs(subfolder_path):
@@ -114,6 +176,9 @@ def dispatch_once():
         if not hasattr(processor, 'pre_flight'):
             logger.error("Processor %s has no pre_flight function", processor_name)
             continue
+
+        # Convert non-standard formats to PDF before scanning for pairs
+        _normalize_formats(subfolder_path)
 
         pairs = _find_pairs(subfolder_path)
         if not pairs:
