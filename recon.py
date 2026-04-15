@@ -609,6 +609,7 @@ def cmd_service(args):
     from lib.api import app, run_server as start_dashboard
     from lib.dispatcher import dispatch_loop
     from lib.filing import filing_worker_loop
+    from lib.acquisition.peertube import acquisition_loop
 
     config = get_config()
     proc = config.get('processing', {})
@@ -683,6 +684,9 @@ def cmd_service(args):
                          args=('embed', lambda: run_embedding(workers=embed_workers))),
         threading.Thread(target=lambda: filing_worker_loop(stop_event, db, config, interval=filing_interval),
                          daemon=True, name='filing'),
+        threading.Thread(target=lambda: acquisition_loop(stop_event, db, config,
+                                                       interval=config.get("peertube", {}).get("poll_interval", 1800)),
+                         daemon=True, name="peertube-acq"),
         threading.Thread(target=progress_loop, daemon=True, name='progress'),
         threading.Thread(target=lambda: start_dashboard(stop_event),
                          daemon=True, name='dashboard'),
@@ -692,6 +696,8 @@ def cmd_service(args):
     logger.info(f"  Dashboard: {web_host}:{web_port}")
     logger.info(f"  Workers: enrich={enrich_workers}, embed={embed_workers}")
     logger.info(f"  Dispatcher: every {dispatch_interval}s | Filing: every {filing_interval}s")
+    pt_interval = config.get("peertube", {}).get("poll_interval", 1800)
+    logger.info(f"  PeerTube acquisition: every {pt_interval}s")
     logger.info(f"  Progress: every {progress_interval}s")
 
     for t in threads:
@@ -721,7 +727,9 @@ def cmd_service(args):
     return 0
 
 def cmd_ingest_peertube(args):
-    from lib.peertube_scraper import ingest_channel, ingest_all, get_instance_stats
+    from lib.peertube_scraper import get_instance_stats
+    from lib.acquisition.peertube import acquire_batch
+    from lib.status import StatusDB
 
     if args.stats:
         stats = get_instance_stats()
@@ -734,36 +742,20 @@ def cmd_ingest_peertube(args):
                 print(f"    {status}: {count}")
         return 0
 
-    since = args.since if hasattr(args, 'since') and args.since else None
+    db = StatusDB()
 
-    if args.channel:
-        print(f"Ingesting PeerTube channel: {args.channel}")
-        result = ingest_channel(args.channel, since=since)
-    else:
-        print("Ingesting all PeerTube videos with captions")
-        result = ingest_all(since=since)
+    print("Acquiring PeerTube transcripts to hopper...")
+    result = acquire_batch(db)
 
-    summary = result.get('summary', {})
     print(f"\nResults:")
-    print(f"  Checked:      {summary.get('total_checked', 0)}")
-    print(f"  Ingested:     {summary.get('ingested', 0)} ({summary.get('total_pages', 0)} pages)")
-    print(f"  No captions:  {summary.get('skipped_no_captions', 0)}")
-    print(f"  Duplicates:   {summary.get('skipped_duplicate', 0)}")
-    print(f"  Failed:       {summary.get('failed', 0)}")
+    print(f"  Acquired:     {result['acquired']}")
+    print(f"  Skipped:      {result['skipped']}")
+    print(f"  Errors:       {result['errors']}")
 
-    # Optional: run enrichment
-    if args.enrich or args.process:
-        print("\nRunning enrichment on extracted content...")
-        from lib.enricher import run_enrichment
-        enriched = run_enrichment()
-        print(f"  Enriched: {enriched}")
-
-    # Optional: run embedding too
-    if args.process:
-        print("\nRunning embedding...")
-        from lib.embedder import run_embedding
-        embedded = run_embedding()
-        print(f"  Embedded: {embedded}")
+    if result['acquired']:
+        print(f"\n{result['acquired']} transcript(s) staged in hopper.")
+        print("The dispatcher will pick them up on its next cycle.")
+        print("Run 'recon status' to monitor progress.")
 
     return 0
 
@@ -1144,12 +1136,8 @@ def main():
     p.set_defaults(func=cmd_organize)
 
     # ingest-peertube
-    p = sub.add_parser('ingest-peertube', help='Ingest PeerTube video transcripts')
-    p.add_argument('--channel', help='Ingest specific channel (actor_name)')
-    p.add_argument('--since', help='Only ingest videos published after this date (ISO format)')
+    p = sub.add_parser('ingest-peertube', help='Acquire PeerTube transcripts to hopper')
     p.add_argument('--stats', action='store_true', help='Show PeerTube instance stats')
-    p.add_argument('--enrich', action='store_true', help='Run enrichment after ingestion')
-    p.add_argument('--process', action='store_true', help='Full pipeline: ingest + enrich + embed')
     p.set_defaults(func=cmd_ingest_peertube)
 
     # ingest

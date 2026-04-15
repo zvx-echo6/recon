@@ -411,6 +411,7 @@ peertube:
   public_url: https://stream.echo6.co  # Public URL for video links
   fetch_timeout: 30                     # HTTP timeout for API/VTT requests
   rate_limit_delay: 0.5                 # Delay between video ingestions (seconds)
+  poll_interval: 1800                    # Seconds between PeerTube acquisition polls (30 min)
 
 # Stream B: New Library Pipeline
 new_pipeline:
