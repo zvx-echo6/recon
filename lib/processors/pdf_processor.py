@@ -181,7 +181,7 @@ def _extract_gemini_metadata(pages_text, config):
 
             for field in ('title', 'author', 'edition', 'year'):
                 val = data.get(field)
-                if val and isinstance(val, str) and val.strip():
+                if val and isinstance(val, str) and val.strip() and val.strip().lower() != "null":
                     result[field] = val.strip()
 
             return result
@@ -223,7 +223,7 @@ def _vote_metadata(source_a, source_b, source_c):
         values = {}
         for name, src in sources.items():
             val = src.get(field)
-            if val:
+            if val and str(val).strip().lower() != "null":
                 values[name] = val
 
         if not values:
