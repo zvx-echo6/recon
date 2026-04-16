@@ -25,6 +25,7 @@ import google.generativeai as genai
 
 from .utils import get_config, setup_logging
 from .status import StatusDB
+from .utils import resolve_text_dir
 
 logger = setup_logging('recon.enricher')
 
@@ -345,7 +346,7 @@ def enrich_single(file_hash, db, config, key_rotator):
     if not doc:
         return False
 
-    text_dir = os.path.join(config['paths']['text'], file_hash)
+    text_dir = resolve_text_dir(file_hash, config, db)
     concepts_dir = os.path.join(config['paths']['concepts'], file_hash)
     window_size = config['processing']['enrich_window_size']
     delay = config['processing']['rate_limit_delay']

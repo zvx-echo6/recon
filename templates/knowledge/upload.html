@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
-<h3 class="section-title mb-16">Upload PDF</h3>
+<h3 class="section-title mb-16">Upload Document</h3>
 <div class="panel">
     <form id="upload-form" enctype="multipart/form-data">
         <div class="mb-16">
-            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">PDF File</label>
-            <input type="file" name="file" accept=".pdf" id="upload-file"
+            <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Document File</label>
+            <input type="file" name="file" accept=".pdf,.txt,.epub,.doc,.docx,.mobi" id="upload-file"
                 style="background:#0a0a0a;border:1px solid #333;color:#c0c0c0;padding:8px;width:100%;font-family:inherit;">
+            <span class="text-dim" style="font-size:11px;display:block;margin-top:4px;">Supported: PDF, TXT, EPUB, DOC, DOCX, MOBI</span>
         </div>
         <div class="mb-16">
             <label class="text-dim text-xs" style="text-transform:uppercase;display:block;margin-bottom:4px;">Category</label>
@@ -67,7 +68,7 @@ document.getElementById('upload-form').addEventListener('submit', async function
             result.innerHTML = '<span style="color:#00ff41;">Queued for processing</span><br>' +
                 '<span class="text-dim">Hash: ' + data.hash + '</span><br>' +
                 '<span class="text-dim">File: ' + data.filename + '</span><br>' +
-                '<span class="text-dim">Category: ' + data.source + '/' + data.category + '</span>';
+                '<span class="text-dim">Type: ' + data.source_type + '</span>';
             fileInput.value = '';
         } else {
             status.style.color = '#ff4444';
