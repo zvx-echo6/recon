@@ -44,9 +44,13 @@
                     '<div class="text-small text-muted">' + s.zim_filename + '</div></td>' +
                     '<td>' + (s.language || '\u2014') + '</td>' +
                     '<td>' + RECON.fmt(s.article_count) + '</td>' +
-                    '<td>' + (es === 'processing' ?
+                    '<td>' + (es === 'complete' && pipeComplete > 0 ?
+                        RECON.fmt(pipeComplete) + ' in Qdrant' :
+                        es === 'processing' ?
                         RECON.fmt(pipeComplete) + ' / ' + RECON.fmt(pipeTotal) + ' in Qdrant (' + pctDone + '%)' :
-                        RECON.fmt(s.processed_count) + ' / ' + RECON.fmt(s.article_count) + ' extracted') + '</td>' +
+                        es === 'extracting' ?
+                        RECON.fmt(s.processed_count) + ' / ' + RECON.fmt(s.article_count) + ' extracted' :
+                        '\u2014') + '</td>' +
                     '<td>' + statusBadge + '</td>' +
                     '<td>' + toggle + '</td>' +
                     '<td><a href="' + browseUrl + '" target="_blank">Browse</a></td>' +
