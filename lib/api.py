@@ -2198,19 +2198,20 @@ def _build_kiwix_sources():
 
     for r in rows:
         source = dict(r)
+        zim_title = r['title'] or r['zim_filename']
         total_articles += r['article_count'] or 0
         total_processed += r['processed_count'] or 0
 
-        # Get pipeline stats for this source's documents
+        # Get pipeline stats for THIS source's documents (filtered by category)
         pipeline = {}
         try:
             pipe_rows = conn.execute("""
                 SELECT d.status, COUNT(*) as cnt
                 FROM documents d
                 JOIN catalogue c ON d.hash = c.hash
-                WHERE c.source = 'kiwix'
+                WHERE c.source = 'kiwix' AND c.category = ?
                 GROUP BY d.status
-            """).fetchall()
+            """, (zim_title,)).fetchall()
             for pr in pipe_rows:
                 pipeline[pr['status']] = pr['cnt']
         except Exception:
@@ -2219,6 +2220,19 @@ def _build_kiwix_sources():
         in_pipe = sum(v for k, v in pipeline.items() if k not in ('complete', 'failed'))
         total_in_pipeline += in_pipe
         source['pipeline'] = pipeline
+
+        # Compute effective status reflecting full pipeline state
+        db_status = r['status']
+        if db_status == 'complete' and pipeline:
+            if in_pipe > 0:
+                source['effective_status'] = 'processing'
+            else:
+                source['effective_status'] = 'complete'
+        elif db_status == 'ingesting':
+            source['effective_status'] = 'extracting'
+        else:
+            source['effective_status'] = db_status  # 'detected'
+
         sources.append(source)
 
     # Check kiwix-serve health

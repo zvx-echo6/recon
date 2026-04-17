@@ -20,9 +20,15 @@
             var sources = data.sources || [];
             var html = '';
             sources.forEach(function(s) {
-                var pctDone = s.article_count > 0 ? (s.processed_count / s.article_count * 100).toFixed(1) : 0;
-                var statusBadge = s.status === 'complete' ? '<span class="badge-complete">COMPLETE</span>' :
-                    s.status === 'ingesting' ? '<span class="badge-ingesting">INGESTING</span>' :
+                var es = s.effective_status || s.status;
+                var pipe = s.pipeline || {};
+                var pipeComplete = pipe.complete || 0;
+                var pipeTotal = 0;
+                for (var k in pipe) pipeTotal += pipe[k];
+                var pctDone = pipeTotal > 0 ? (pipeComplete / pipeTotal * 100).toFixed(1) : 0;
+                var statusBadge = es === 'complete' ? '<span class="badge-complete">COMPLETE</span>' :
+                    es === 'processing' ? '<span class="badge-processing">PROCESSING</span>' :
+                    es === 'extracting' ? '<span class="badge-extracting">EXTRACTING</span>' :
                     '<span class="badge-detected">DETECTED</span>';
                 // Derive browse URL from zim_filename
                 var zimName = s.zim_filename.replace(/_(?:maxi|mini|nopic)_[\d-]+\.zim$/, '');
@@ -38,8 +44,9 @@
                     '<div class="text-small text-muted">' + s.zim_filename + '</div></td>' +
                     '<td>' + (s.language || '\u2014') + '</td>' +
                     '<td>' + RECON.fmt(s.article_count) + '</td>' +
-                    '<td>' + RECON.fmt(s.processed_count) + ' / ' + RECON.fmt(s.article_count) +
-                    ' (' + pctDone + '%)</td>' +
+                    '<td>' + (es === 'processing' ?
+                        RECON.fmt(pipeComplete) + ' / ' + RECON.fmt(pipeTotal) + ' in Qdrant (' + pctDone + '%)' :
+                        RECON.fmt(s.processed_count) + ' / ' + RECON.fmt(s.article_count) + ' extracted') + '</td>' +
                     '<td>' + statusBadge + '</td>' +
                     '<td>' + toggle + '</td>' +
                     '<td><a href="' + browseUrl + '" target="_blank">Browse</a></td>' +
