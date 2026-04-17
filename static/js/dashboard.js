@@ -88,7 +88,7 @@
                 var pipeCount = s.in_pipeline || 0;
                 totalCat += catCount; totalComp += compCount; totalPipe += pipeCount;
                 totalConcepts += s.concepts; totalVectors += s.vectors;
-                var badge = s.type === 'transcript' ? '<span class="badge-transcript">TRANSCRIPT</span>' : s.type === 'web' ? '<span class="badge-web">WEB</span>' : '<span class="badge-pdf">PDF</span>';
+                var badge = s.type === 'transcript' ? '<span class="badge-transcript">TRANSCRIPT</span>' : s.type === 'web' ? '<span class="badge-web">WEB</span>' : s.type === 'wiki' ? '<span class="badge-wiki">WIKI</span>' : '<span class="badge-pdf">PDF</span>';
                 var compPct = catCount > 0 ? (compCount / catCount * 100) : 0;
                 var pipePct = catCount > 0 ? (pipeCount / catCount * 100) : 0;
                 var compColor = compPct >= 100 ? '#00ff41' : compPct > 0 ? '#ffa500' : '#666';
@@ -185,7 +185,7 @@
                 rtb.innerHTML = '<tr><td colspan="4" class="text-dim">None yet</td></tr>';
             } else {
                 rtb.innerHTML = data.recent_complete.map(function(r) {
-                    var badge = r.type === 'transcript' ? '<span class="badge-transcript">TRANSCRIPT</span>' : r.type === 'web' ? '<span class="badge-web">WEB</span>' : '<span class="badge-pdf">PDF</span>';
+                    var badge = r.type === 'transcript' ? '<span class="badge-transcript">TRANSCRIPT</span>' : r.type === 'web' ? '<span class="badge-web">WEB</span>' : r.type === 'wiki' ? '<span class="badge-wiki">WIKI</span>' : '<span class="badge-pdf">PDF</span>';
                     return '<tr><td>' + r.title + '</td><td>' + badge + '</td><td>' +
                         r.concepts + '</td><td>' + r.vectors + '</td></tr>';
                 }).join('');
