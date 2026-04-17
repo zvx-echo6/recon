@@ -38,6 +38,39 @@ MIN_TEXT_LENGTH = 200
 # Elements to strip before text extraction
 STRIP_TAGS = {'nav', 'footer', 'script', 'style', 'header', 'aside'}
 
+# Non-English article path suffix pattern (MediaWiki ZIMs use /XX or /XXX suffixes)
+# Matches paths ending in /xx where xx is a 2-3 letter lowercase language code
+_LANG_SUFFIX_RE = re.compile(r'/[a-z]{2,3}$')
+# Common ISO 639-1/2 language codes to filter (excludes 'en')
+_NON_EN_LANGS = {
+    'aa','ab','af','ak','am','an','ar','as','av','ay','az',
+    'ba','be','bg','bh','bi','bm','bn','bo','br','bs',
+    'ca','ce','ch','co','cr','cs','cu','cv','cy',
+    'da','de','dv','dz',
+    'ee','el','eo','es','et','eu',
+    'fa','ff','fi','fj','fo','fr','fy',
+    'ga','gd','gl','gn','gu','gv',
+    'ha','he','hi','ho','hr','ht','hu','hy','hz',
+    'ia','id','ie','ig','ii','ik','io','is','it','iu',
+    'ja','jv',
+    'ka','kg','ki','kj','kk','kl','km','kn','ko','kr','ks','ku','kv','kw','ky',
+    'la','lb','lg','li','ln','lo','lt','lu','lv',
+    'mg','mh','mi','mk','ml','mn','mo','mr','ms','mt','my',
+    'na','nb','nd','ne','ng','nl','nn','no','nr','nv','ny',
+    'oc','oj','om','or','os',
+    'pa','pi','pl','ps','pt',
+    'qu',
+    'rm','rn','ro','ru','rw',
+    'sa','sc','sd','se','sg','sh','si','sk','sl','sm','sn','so','sq','sr','ss','st','su','sv','sw',
+    'ta','te','tg','th','ti','tk','tl','tn','to','tr','ts','tt','tw','ty',
+    'ug','uk','ur','uz',
+    've','vi','vo',
+    'wa','wo',
+    'xh',
+    'yi','yo',
+    'za','zh','zu',
+}
+
 
 def _text_hash(text):
     """Compute MD5 hash of text content (matching content_hash style)."""
@@ -188,6 +221,13 @@ def ingest_zim(zim_source_id, db, config, stop_event=None,
 
         # Skip if already processed in a prior run
         if article_path in existing_paths:
+            continue
+
+        # Skip non-English articles (MediaWiki translation suffix pattern)
+        lang_match = _LANG_SUFFIX_RE.search(article_path)
+        if lang_match and lang_match.group(0)[1:] in _NON_EN_LANGS:
+            stats['skipped'] += 1
+            total_processed_this_run += 1
             continue
 
         # Extract and clean text
