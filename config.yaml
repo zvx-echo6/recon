@@ -440,3 +440,7 @@ pipeline:
     text: text_processor
   # mtime stability threshold for picking up files from acquired/
   mtime_stability_seconds: 10
+  # Language filter: skip non-English content before Gemini enrichment
+  language_filter: true           # Enable langdetect-based filtering
+  allowed_languages:              # ISO 639-1 codes allowed through enrichment
+    - en

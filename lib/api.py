@@ -2030,12 +2030,16 @@ def api_kiwix_upload():
     except Exception as e:
         logger.warning(f"kiwix-manage add failed: {e}")
 
-    # Scan for new entry
-    try:
-        from .zim_monitor import scan_zims
-        scan_zims()
-    except Exception as e:
-        logger.warning(f"scan_zims after upload failed: {e}")
+    # Scan for new entry (retry — monitorLibrary may need a moment to reload)
+    import time as _time
+    from .zim_monitor import scan_zims
+    for attempt in range(3):
+        try:
+            scan_zims()
+            break
+        except Exception as e:
+            logger.warning(f"scan_zims attempt {attempt+1} failed: {e}")
+            _time.sleep(2)
 
     # Refresh cache
     try:
