@@ -35,11 +35,14 @@ _cache = {
     'qdrant_scroll': None,
     'qdrant_scroll_ts': 0,
     'quick_stats': None,
+    'kiwix_sources': None,
 }
 
 app = Flask(__name__,
             template_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'templates'),
             static_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static'))
+
+app.config['MAX_CONTENT_LENGTH'] = None  # ZIM files can be multi-GB
 
 # ── Navigation Constants ──
 
@@ -56,6 +59,8 @@ PEERTUBE_SUBNAV = [
     {'href': '/peertube/channels', 'label': 'Channels'},
 ]
 
+
+KIWIX_SUBNAV = []  # Single-page, no subnav needed
 SETTINGS_SUBNAV = [
     {'href': '/settings/keys', 'label': 'API Keys'},
     {'href': '/settings/cookies', 'label': 'YouTube Cookies'},
@@ -908,6 +913,7 @@ def _build_knowledge_stats():
             c.source,
             CASE
               WHEN c.source = 'stream.echo6.co' THEN 'transcript'
+              WHEN c.source = 'kiwix' THEN 'wiki'
               WHEN c.path LIKE 'http%' THEN 'web'
               ELSE 'pdf'
             END as type,
@@ -967,6 +973,7 @@ def _build_knowledge_stats():
                d.status, d.concepts_extracted, d.vectors_inserted,
                CASE
                  WHEN c.source = 'stream.echo6.co' THEN 'transcript'
+                 WHEN c.source = 'kiwix' THEN 'wiki'
                  WHEN d.path LIKE 'http%' THEN 'web'
                  ELSE 'pdf'
                END as type
@@ -1072,6 +1079,12 @@ def start_cache_warmer(stop_event=None):
         except Exception as e:
             logger.warning(f"  Quick stats warm-up failed: {e}")
 
+        try:
+            _cache['kiwix_sources'] = _build_kiwix_sources()
+            logger.info("  Kiwix sources cached")
+        except Exception as e:
+            logger.warning(f"  Kiwix sources warm-up failed: {e}")
+
         logger.info("Cache warmer ready — all data pre-loaded")
 
         # Continuous refresh loop
@@ -1096,6 +1109,10 @@ def start_cache_warmer(stop_event=None):
                     logger.debug(f"Knowledge stats refresh failed: {e}")
                 try:
                     _cache['quick_stats'] = _build_quick_stats()
+                except Exception:
+                    pass
+                try:
+                    _cache['kiwix_sources'] = _build_kiwix_sources()
                 except Exception:
                     pass
 
@@ -1928,6 +1945,315 @@ def api_peertube_dashboard():
     if _cache['pt_dashboard'] is None:
         return jsonify({'error': 'Warming up, try again in a few seconds'}), 503
     return jsonify(_cache['pt_dashboard'])
+
+
+
+# ── Kiwix Dashboard ──
+
+@app.route('/kiwix')
+def kiwix_dashboard():
+    return render_template('kiwix/dashboard.html',
+                           domain='kiwix', subnav=KIWIX_SUBNAV, active_page='/kiwix')
+
+
+@app.route('/api/kiwix/sources')
+def api_kiwix_sources():
+    """Serve pre-cached Kiwix sources data (never blocks)."""
+    if _cache['kiwix_sources'] is None:
+        return jsonify({'error': 'Warming up, try again in a few seconds'}), 503
+    return jsonify(_cache['kiwix_sources'])
+
+
+@app.route('/api/kiwix/toggle-ingest/<int:source_id>', methods=['POST'])
+def api_kiwix_toggle_ingest(source_id):
+    """Toggle ingest_enabled on a ZIM source."""
+    db = StatusDB()
+    conn = db._get_conn()
+    row = conn.execute("SELECT id, status, ingest_enabled FROM zim_sources WHERE id = ?", (source_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Source not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    new_val = 1 if data.get('enabled', not row['ingest_enabled']) else 0
+    conn.execute("UPDATE zim_sources SET ingest_enabled = ? WHERE id = ?", (new_val, source_id))
+    conn.commit()
+
+    # If toggling ON and source is eligible, spawn ingest in background
+    if new_val == 1 and row['status'] == 'detected':
+        _spawn_zim_ingest(source_id)
+
+    return jsonify({'ok': True, 'ingest_enabled': new_val})
+
+
+@app.route('/api/kiwix/trigger-ingest/<int:source_id>', methods=['POST'])
+def api_kiwix_trigger_ingest(source_id):
+    """Explicit one-shot ingest trigger."""
+    db = StatusDB()
+    conn = db._get_conn()
+    row = conn.execute("SELECT id FROM zim_sources WHERE id = ?", (source_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Source not found'}), 404
+
+    _spawn_zim_ingest(source_id)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/kiwix/upload', methods=['POST'])
+def api_kiwix_upload():
+    """Accept ZIM file upload, register with kiwix-serve, scan."""
+    import subprocess
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    f = request.files['file']
+    if not f.filename or not f.filename.endswith('.zim'):
+        return jsonify({'error': 'File must be a .zim file'}), 400
+
+    filename = secure_filename(f.filename)
+    dest = os.path.join('/mnt/kiwix', filename)
+    tmp_dest = dest + '.tmp'
+
+    try:
+        f.save(tmp_dest)
+        os.rename(tmp_dest, dest)
+    except Exception as e:
+        if os.path.exists(tmp_dest):
+            os.remove(tmp_dest)
+        return jsonify({'error': f'Save failed: {e}'}), 500
+
+    # Register with kiwix-serve library
+    try:
+        subprocess.run(
+            ['/opt/recon/bin/kiwix-manage', '/mnt/kiwix/library.xml', 'add', dest],
+            capture_output=True, text=True, timeout=30
+        )
+    except Exception as e:
+        logger.warning(f"kiwix-manage add failed: {e}")
+
+    # Scan for new entry (retry — monitorLibrary may need a moment to reload)
+    import time as _time
+    from .zim_monitor import scan_zims
+    for attempt in range(3):
+        try:
+            scan_zims()
+            break
+        except Exception as e:
+            logger.warning(f"scan_zims attempt {attempt+1} failed: {e}")
+            _time.sleep(2)
+
+    # Refresh cache
+    try:
+        _cache['kiwix_sources'] = _build_kiwix_sources()
+    except Exception:
+        pass
+
+    return jsonify({'ok': True, 'filename': filename})
+
+
+
+@app.route('/api/kiwix/remove/<int:source_id>', methods=['POST'])
+def api_kiwix_remove(source_id):
+    """Remove a ZIM source: delete vectors, DB records, library entry, and file."""
+    import subprocess
+    import requests as req
+
+    db = StatusDB()
+    conn = db._get_conn()
+    row = conn.execute("SELECT * FROM zim_sources WHERE id = ?", (source_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Source not found'}), 404
+
+    zim_source = dict(row)
+    zim_filename = zim_source['zim_filename']
+    zim_path = zim_source['zim_path']
+    zim_title = zim_source.get('title', zim_filename)
+    results = {'vectors_deleted': 0, 'docs_deleted': 0, 'file_deleted': False}
+
+    # Step 1: Find all document hashes for this ZIM source
+    doc_hashes = [r['hash'] for r in conn.execute(
+        "SELECT c.hash FROM catalogue c WHERE c.source = 'kiwix' AND c.category = ?",
+        (zim_title,)
+    ).fetchall()]
+
+    # Step 2: Delete vectors from Qdrant
+    if doc_hashes:
+        config = get_config()
+        qdrant_host = config.get('vector_db', {}).get('host', '100.64.0.14')
+        qdrant_port = config.get('vector_db', {}).get('port', 6333)
+        collection = config.get('vector_db', {}).get('collection', 'recon_knowledge')
+
+        # Delete in batches of 100 hashes
+        for i in range(0, len(doc_hashes), 100):
+            batch = doc_hashes[i:i+100]
+            try:
+                resp = req.post(
+                    f"http://{qdrant_host}:{qdrant_port}/collections/{collection}/points/delete",
+                    json={
+                        "filter": {
+                            "must": [{
+                                "key": "doc_hash",
+                                "match": {"any": batch}
+                            }]
+                        }
+                    },
+                    timeout=30
+                )
+                if resp.status_code == 200:
+                    results['vectors_deleted'] += len(batch)
+            except Exception as e:
+                logger.warning(f"Qdrant delete batch failed: {e}")
+
+    # Step 3: Delete DB records
+    for h in doc_hashes:
+        # Delete processing directory if it exists
+        text_dir_row = conn.execute("SELECT text_dir FROM documents WHERE hash = ?", (h,)).fetchone()
+        if text_dir_row and text_dir_row['text_dir']:
+            try:
+                import shutil
+                shutil.rmtree(text_dir_row['text_dir'], ignore_errors=True)
+            except Exception:
+                pass
+        conn.execute("DELETE FROM documents WHERE hash = ?", (h,))
+        conn.execute("DELETE FROM catalogue WHERE hash = ?", (h,))
+    results['docs_deleted'] = len(doc_hashes)
+
+    # Delete zim_articles records
+    conn.execute("DELETE FROM zim_articles WHERE zim_source_id = ?", (source_id,))
+
+    # Delete zim_sources record
+    conn.execute("DELETE FROM zim_sources WHERE id = ?", (source_id,))
+    conn.commit()
+
+    # Step 4: Remove from kiwix-serve library
+    try:
+        # Get the book ID from library.xml
+        subprocess.run(
+            ['/opt/recon/bin/kiwix-manage', '/mnt/kiwix/library.xml', 'remove', zim_filename.replace('.zim', '')],
+            capture_output=True, text=True, timeout=10
+        )
+    except Exception as e:
+        logger.warning(f"kiwix-manage remove failed: {e}")
+
+    # Step 5: Delete the ZIM file
+    if os.path.isfile(zim_path):
+        try:
+            os.remove(zim_path)
+            results['file_deleted'] = True
+        except Exception as e:
+            logger.warning(f"ZIM file delete failed: {e}")
+            results['file_deleted'] = False
+
+    # Refresh cache
+    try:
+        _cache['kiwix_sources'] = _build_kiwix_sources()
+    except Exception:
+        pass
+
+    logger.info(f"Removed ZIM source '{zim_title}': {results}")
+    return jsonify({'ok': True, 'results': results})
+
+
+def _spawn_zim_ingest(source_id):
+    """Start ZIM ingestion in a background thread."""
+    def _run():
+        try:
+            from .processors.zim_processor import ingest_zim
+            config = get_config()
+            db = StatusDB()
+            logger.info(f"Starting ZIM ingest for source {source_id}")
+            result = ingest_zim(source_id, db, config)
+            logger.info(f"ZIM ingest complete for source {source_id}: {result}")
+            # Refresh cache after completion
+            try:
+                _cache['kiwix_sources'] = _build_kiwix_sources()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"ZIM ingest failed for source {source_id}: {e}")
+
+    t = threading.Thread(target=_run, daemon=True, name=f'zim-ingest-{source_id}')
+    t.start()
+
+
+def _build_kiwix_sources():
+    """Build Kiwix sources data for the dashboard cache."""
+    import urllib.request
+
+    db = StatusDB()
+    conn = db._get_conn()
+
+    # Get all ZIM sources
+    rows = conn.execute("""
+        SELECT id, zim_filename, title, description, language, category,
+               article_count, status, processed_count, skipped_count, error_count,
+               ingest_enabled, detected_at, started_at, completed_at
+        FROM zim_sources
+        ORDER BY detected_at DESC
+    """).fetchall()
+
+    sources = []
+    total_articles = 0
+    total_processed = 0
+    total_in_pipeline = 0
+
+    for r in rows:
+        source = dict(r)
+        zim_title = r['title'] or r['zim_filename']
+        total_articles += r['article_count'] or 0
+        total_processed += r['processed_count'] or 0
+
+        # Get pipeline stats for THIS source's documents (filtered by category)
+        pipeline = {}
+        try:
+            pipe_rows = conn.execute("""
+                SELECT d.status, COUNT(*) as cnt
+                FROM documents d
+                JOIN catalogue c ON d.hash = c.hash
+                WHERE c.source = 'kiwix' AND c.category = ?
+                GROUP BY d.status
+            """, (zim_title,)).fetchall()
+            for pr in pipe_rows:
+                pipeline[pr['status']] = pr['cnt']
+        except Exception:
+            pass
+
+        in_pipe = sum(v for k, v in pipeline.items() if k not in ('complete', 'failed'))
+        total_in_pipeline += in_pipe
+        source['pipeline'] = pipeline
+
+        # Compute effective status reflecting full pipeline state
+        db_status = r['status']
+        if db_status == 'complete' and pipeline:
+            if in_pipe > 0:
+                source['effective_status'] = 'processing'
+            else:
+                source['effective_status'] = 'complete'
+        elif db_status == 'ingesting':
+            source['effective_status'] = 'extracting'
+        else:
+            source['effective_status'] = db_status  # 'detected'
+
+        sources.append(source)
+
+    # Check kiwix-serve health
+    kiwix_status = 'inactive'
+    try:
+        resp = urllib.request.urlopen("http://localhost:8430", timeout=3)
+        if resp.status == 200:
+            kiwix_status = 'active'
+    except Exception:
+        pass
+
+    return {
+        'sources': sources,
+        'kiwix_serve': {'status': kiwix_status, 'url': 'https://wiki.echo6.co'},
+        'totals': {
+            'sources': len(sources),
+            'articles': total_articles,
+            'processed': total_processed,
+            'in_pipeline': total_in_pipeline,
+        }
+    }
 
 
 # ── Metrics API ──

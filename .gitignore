@@ -24,3 +24,6 @@ recon.db
 
 # OS
 .DS_Store
+
+# Kiwix binary tools (installed from tarball)
+bin/

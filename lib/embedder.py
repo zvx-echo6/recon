@@ -10,6 +10,7 @@ Dependencies: requests, qdrant-client
 Config: embedding, vector_db, processing.embed_workers
 """
 import json
+import re
 import os
 import time
 import traceback
@@ -290,7 +291,17 @@ def embed_single(file_hash, db, config):
                     page_timestamps = meta['page_timestamps']
             except Exception:
                 pass
-        if doc.get('path'):
+        # For ZIM articles, build wiki.echo6.co URL from meta.json
+        if source_type == 'zim' and meta.get('article_path'):
+            from urllib.parse import quote as url_quote
+            zim_name = meta.get('zim_name', '')
+            if not zim_name:
+                # Derive from zim_file: strip only .zim extension, keep full name
+                zf = meta.get('zim_file', '')
+                zim_name = zf.removesuffix('.zim')
+            article_path = url_quote(meta['article_path'], safe='/:@!$&()*+,;=-._~')
+            download_url = f'https://wiki.echo6.co/content/{zim_name}/{article_path}'
+        elif doc.get('path'):
             download_url = generate_download_url(
                 doc['path'], config.get('library_root', '/mnt/library')
             )

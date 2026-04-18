@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="kiwix-dashboard">
+    <!-- Stats row: 4 cards -->
+    <div class="stat-grid" style="grid-template-columns:repeat(4, 1fr);">
+        <div class="stat-card"><div class="label">ZIM Sources</div><div class="value" id="kx-sources">&mdash;</div></div>
+        <div class="stat-card"><div class="label">Total Articles</div><div class="value" id="kx-articles">&mdash;</div></div>
+        <div class="stat-card"><div class="label">Processed</div><div class="value" id="kx-processed">&mdash;</div></div>
+        <div class="stat-card"><div class="label">In Pipeline</div><div class="value" id="kx-pipeline">&mdash;</div></div>
+    </div>
+
+    <!-- Kiwix-serve status -->
+    <div class="svc-row">
+        <div class="svc-item"><span class="svc-dot unknown" id="svc-kiwix-serve"></span>Kiwix-Serve</div>
+        <div class="svc-item"><a href="https://wiki.echo6.co" target="_blank" class="text-muted" id="kx-browse-link">Browse Wiki Library</a></div>
+    </div>
+
+    <!-- ZIM Library Table -->
+    <div class="panel">
+        <h3 class="section-title" style="margin-bottom:12px;">ZIM Library</h3>
+        <table class="data-table" id="kx-table">
+            <thead>
+                <tr><th>Title</th><th>Language</th><th>Articles</th><th>Progress</th><th>Status</th><th>Ingest</th><th>Browse</th><th></th></tr>
+            </thead>
+            <tbody id="kx-table-body">
+                <tr><td colspan="8" class="text-muted">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Upload Section -->
+    <div class="panel">
+        <h3 class="section-title" style="margin-bottom:12px;">Upload ZIM File</h3>
+        <div class="upload-area" id="kx-upload-area">
+            <input type="file" id="kx-file-input" accept=".zim" style="display:none">
+            <button class="btn" onclick="document.getElementById('kx-file-input').click()">Choose .zim file</button>
+            <span id="kx-upload-status" class="text-muted" style="margin-left:12px;"></span>
+        </div>
+        <div id="kx-upload-progress" style="display:none; margin-top:8px;">
+            <div class="pipeline-bar"><div id="kx-progress-bar" class="segment" style="width:0%;background:#7c3aed;"></div></div>
+            <span class="text-small text-muted" id="kx-progress-text"></span>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/kiwix.js"></script>
+{% endblock %}

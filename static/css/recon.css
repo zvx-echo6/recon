@@ -211,6 +211,7 @@ tr:hover { background: var(--bg-secondary); }
 .badge-web { background: #1e3a5f; color: #60a5fa; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
 .badge-pdf { background: #2d5a2d; color: #4ade80; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
 .badge-transcript { background: #3b1f5e; color: #c084fc; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-wiki { background: #1f4a3b; color: #34d399; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
 
 /* ── Trend indicators ── */
 .trend { font-size: 11px; margin-left: 6px; }
@@ -315,3 +316,18 @@ tr:hover { background: var(--bg-secondary); }
 .errors-panel.has-errors { display: block; }
 .errors-panel summary { color: var(--red); cursor: pointer; font-size: 13px; margin-bottom: 8px; }
 .errors-panel .error-line { color: var(--text-muted); font-size: 11px; padding: 2px 0; border-bottom: 1px solid var(--border); }
+
+/* ── Toggle switch ── */
+.toggle-switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider { position: absolute; cursor: pointer; inset: 0; background: #333; border-radius: 20px; transition: 0.3s; }
+.toggle-slider:before { content: ''; position: absolute; height: 16px; width: 16px; left: 2px; bottom: 2px; background: #888; border-radius: 50%; transition: 0.3s; }
+.toggle-switch input:checked + .toggle-slider { background: #1a4a2e; }
+.toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); background: #00ff41; }
+
+/* ── Kiwix status badges ── */
+.badge-complete { background: #1a4a2e; color: #00ff41; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-ingesting { background: #1a3a5a; color: #0ea5e9; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-detected { background: #333; color: #888; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-processing { background: #4a3a1a; color: #f59e0b; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-extracting { background: #1a3a5a; color: #0ea5e9; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
