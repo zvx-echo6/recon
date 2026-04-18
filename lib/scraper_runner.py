@@ -474,7 +474,7 @@ def _process_job(job, config, stop_event):
 
     domain = _sanitize_domain(url)
     date_tag = datetime.now().strftime('%Y-%m')
-    zim_filename = f"{_sanitize_filename(domain)}_{language}_{date_tag}.zim"
+    zim_filename = f"{_sanitize_filename(domain)}_{language}_{date_tag}_{job_id}.zim"
     zim_path = os.path.join(output_dir, zim_filename)
 
     logger.info(f"Job {job_id}: starting scrape of {url}")
@@ -502,7 +502,7 @@ def _process_job(job, config, stop_event):
     if crawl_mode == 'redirect' and resolved_url != url:
         logger.info(f"Job {job_id}: URL resolved from {url} → {resolved_url}")
         domain = _sanitize_domain(resolved_url)
-        zim_filename = f"{_sanitize_filename(domain)}_{language}_{date_tag}.zim"
+        zim_filename = f"{_sanitize_filename(domain)}_{language}_{date_tag}_{job_id}.zim"
         zim_path = os.path.join(output_dir, zim_filename)
 
     # ── Phase A: Crawl (dispatch to backend) ────────────────────────
