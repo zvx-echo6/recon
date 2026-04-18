@@ -65,7 +65,10 @@
 
     <!-- Jobs Table -->
     <div class="panel">
-        <h3 class="section-title" style="margin-bottom:12px;">Scrape Jobs</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <h3 class="section-title" style="margin:0;">Scrape Jobs</h3>
+            <button class="btn btn-danger" onclick="SCRAPER.clearFailed()" id="sc-clear-btn" style="display:none;">Clear Failed</button>
+        </div>
         <table class="data-table" id="sc-table">
             <thead>
                 <tr>

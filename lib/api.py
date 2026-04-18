@@ -2373,6 +2373,36 @@ def api_scraper_retry(job_id):
     return jsonify({'ok': True})
 
 
+@app.route('/api/scraper/delete/<int:job_id>', methods=['POST'])
+def api_scraper_delete(job_id):
+    """Delete a scrape job (only if not currently running)."""
+    db = StatusDB()
+    job = db.get_scrape_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+
+    if job['status'] == 'running':
+        return jsonify({'error': 'Cannot delete a running job — cancel it first'}), 400
+
+    conn = db._get_conn()
+    conn.execute("DELETE FROM scrape_jobs WHERE id = ?", (job_id,))
+    conn.commit()
+    logger.info(f"Scraper job {job_id} deleted")
+    return jsonify({'ok': True})
+
+
+@app.route('/api/scraper/clear-failed', methods=['POST'])
+def api_scraper_clear_failed():
+    """Delete all failed and cancelled scrape jobs."""
+    db = StatusDB()
+    conn = db._get_conn()
+    result = conn.execute("DELETE FROM scrape_jobs WHERE status IN ('failed', 'cancelled')")
+    conn.commit()
+    count = result.rowcount
+    logger.info(f"Cleared {count} failed/cancelled scraper jobs")
+    return jsonify({'ok': True, 'deleted': count})
+
+
 # ── Metrics API ──
 
 @app.route('/api/metrics/history')

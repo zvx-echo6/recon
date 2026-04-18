@@ -11,13 +11,17 @@
             var active = 0, complete = 0, failed = 0;
             jobs.forEach(function(j) {
                 if (j.status === 'complete') complete++;
-                else if (j.status === 'failed') failed++;
+                else if (j.status === 'failed' || j.status === 'cancelled') failed++;
                 else if (j.status === 'running' || j.status === 'pending') active++;
             });
             RECON.set('sc-total', RECON.fmt(total));
             RECON.set('sc-active', RECON.fmt(active));
             RECON.set('sc-complete', RECON.fmt(complete));
             RECON.set('sc-failed', RECON.fmt(failed));
+
+            // Show/hide Clear Failed button
+            var clearBtn = document.getElementById('sc-clear-btn');
+            if (clearBtn) clearBtn.style.display = failed > 0 ? '' : 'none';
 
             // Table
             var html = '';
@@ -33,7 +37,10 @@
                 if (j.status === 'running' || j.status === 'pending') {
                     actions = '<button class="btn btn-danger" onclick="SCRAPER.cancel(' + j.id + ')">Cancel</button>';
                 } else if (j.status === 'failed' || j.status === 'cancelled') {
-                    actions = '<button class="btn" onclick="SCRAPER.retry(' + j.id + ')">Retry</button>';
+                    actions = '<button class="btn" onclick="SCRAPER.retry(' + j.id + ')">Retry</button> ' +
+                              '<button class="btn btn-danger" onclick="SCRAPER.remove(' + j.id + ')">Delete</button>';
+                } else if (j.status === 'complete') {
+                    actions = '<button class="btn btn-danger" onclick="SCRAPER.remove(' + j.id + ')">Delete</button>';
                 }
 
                 // Truncate URL for display
@@ -146,8 +153,24 @@
         });
     }
 
+    function remove(jobId) {
+        if (!confirm('Delete job #' + jobId + '? This cannot be undone.')) return;
+        RECON.postJSON('/api/scraper/delete/' + jobId).then(function(data) {
+            if (data.ok) loadJobs();
+            else alert('Error: ' + (data.error || 'Unknown'));
+        });
+    }
+
+    function clearFailed() {
+        if (!confirm('Delete all failed and cancelled jobs?')) return;
+        RECON.postJSON('/api/scraper/clear-failed').then(function(data) {
+            if (data.ok) loadJobs();
+            else alert('Error: ' + (data.error || 'Unknown'));
+        });
+    }
+
     // Expose for inline onclick
-    window.SCRAPER = { submit: submit, cancel: cancel, retry: retry };
+    window.SCRAPER = { submit: submit, cancel: cancel, retry: retry, remove: remove, clearFailed: clearFailed };
 
     document.addEventListener('DOMContentLoaded', function() {
         RECON.startRefresh(loadJobs, 10000);
