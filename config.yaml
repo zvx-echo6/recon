@@ -489,7 +489,6 @@ scraper:
     executable: single-file
     chromium_path: ""              # Auto-detected from Playwright if empty
     crawl_max_depth: 10
-    crawl_delay: 2                 # Seconds between page fetches
 
 # Stream B: New Library Pipeline
 new_pipeline:

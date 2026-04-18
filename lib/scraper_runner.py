@@ -368,7 +368,6 @@ def _crawl_singlefile(job, url, site_dir, config, stop_event, db):
     executable = sf_cfg.get('executable', 'single-file')
     chromium_path = _get_chromium_path(config)
     crawl_max_depth = sf_cfg.get('crawl_max_depth', 10)
-    crawl_delay = sf_cfg.get('crawl_delay', 2)
 
     if not chromium_path:
         return 0, 'Chromium not found — cannot use browser crawl mode'
@@ -382,8 +381,9 @@ def _crawl_singlefile(job, url, site_dir, config, stop_event, db):
         executable,
         '--crawl-links=true',
         '--crawl-inner-links-only=true',
+        '--crawl-no-parent=true',
+        '--crawl-replace-URLs=true',
         f'--crawl-max-depth={crawl_max_depth}',
-        f'--crawl-delay={crawl_delay * 1000}',  # milliseconds
         f'--browser-executable-path={chromium_path}',
         '--browser-headless=true',
         '--browser-args=["--no-sandbox","--disable-dev-shm-usage"]',
@@ -391,7 +391,7 @@ def _crawl_singlefile(job, url, site_dir, config, stop_event, db):
         url,
     ]
 
-    logger.info(f"Job {job_id}: SingleFile crawl starting (depth={crawl_max_depth}, delay={crawl_delay}s)")
+    logger.info(f"Job {job_id}: SingleFile crawl starting (depth={crawl_max_depth})")
     sf_log = os.path.join(workspace, 'singlefile.log')
     try:
         with open(sf_log, 'w') as log_fh:
