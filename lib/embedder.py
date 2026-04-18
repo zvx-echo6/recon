@@ -296,11 +296,11 @@ def embed_single(file_hash, db, config):
             from urllib.parse import quote as url_quote
             zim_name = meta.get('zim_name', '')
             if not zim_name:
-                # Derive from zim_file: strip flavor/date suffix
+                # Derive from zim_file: strip only .zim extension, keep full name
                 zf = meta.get('zim_file', '')
-                zim_name = re.sub(r'_(?:maxi|mini|nopic)_[\d-]+\.zim$', '', zf)
+                zim_name = zf.removesuffix('.zim')
             article_path = url_quote(meta['article_path'], safe='/:@!$&()*+,;=-._~')
-            download_url = f'https://wiki.echo6.co/{zim_name}/{article_path}'
+            download_url = f'https://wiki.echo6.co/content/{zim_name}/{article_path}'
         elif doc.get('path'):
             download_url = generate_download_url(
                 doc['path'], config.get('library_root', '/mnt/library')
