@@ -60,7 +60,10 @@ PEERTUBE_SUBNAV = [
 ]
 
 
-KIWIX_SUBNAV = []  # Single-page, no subnav needed
+KIWIX_SUBNAV = [
+    {'href': '/kiwix', 'label': 'Library'},
+    {'href': '/kiwix/scraper', 'label': 'Scraper'},
+]
 SETTINGS_SUBNAV = [
     {'href': '/settings/keys', 'label': 'API Keys'},
     {'href': '/settings/cookies', 'label': 'YouTube Cookies'},
@@ -1954,6 +1957,12 @@ def api_peertube_dashboard():
 def kiwix_dashboard():
     return render_template('kiwix/dashboard.html',
                            domain='kiwix', subnav=KIWIX_SUBNAV, active_page='/kiwix')
+
+
+@app.route('/kiwix/scraper')
+def kiwix_scraper():
+    return render_template('kiwix/scraper.html',
+                           domain='kiwix', subnav=KIWIX_SUBNAV, active_page='/kiwix/scraper')
 
 
 @app.route('/api/kiwix/sources')

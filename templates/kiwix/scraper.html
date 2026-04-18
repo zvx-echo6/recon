@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="scraper-page">
+    <!-- Submit Form -->
+    <div class="panel">
+        <h3 class="section-title" style="margin-bottom:12px;">Submit Scrape Job</h3>
+        <form id="scraper-form" onsubmit="return SCRAPER.submit(event)">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+                <div>
+                    <label class="text-small text-muted" style="display:block;margin-bottom:4px;">URL *</label>
+                    <input type="url" id="sf-url" placeholder="https://example.com/" required
+                           style="width:100%;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);border-radius:var(--radius);font-family:inherit;font-size:13px;">
+                </div>
+                <div>
+                    <label class="text-small text-muted" style="display:block;margin-bottom:4px;">Title</label>
+                    <input type="text" id="sf-title" placeholder="Optional display title"
+                           style="width:100%;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);border-radius:var(--radius);font-family:inherit;font-size:13px;">
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;">
+                <div>
+                    <label class="text-small text-muted" style="display:block;margin-bottom:4px;">Language</label>
+                    <select id="sf-lang"
+                            style="width:100%;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);border-radius:var(--radius);font-family:inherit;font-size:13px;">
+                        <option value="eng" selected>English</option>
+                        <option value="spa">Spanish</option>
+                        <option value="fra">French</option>
+                        <option value="deu">German</option>
+                        <option value="por">Portuguese</option>
+                        <option value="rus">Russian</option>
+                        <option value="jpn">Japanese</option>
+                        <option value="zho">Chinese</option>
+                        <option value="mul">Multilingual</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-small text-muted" style="display:block;margin-bottom:4px;">Category</label>
+                    <input type="text" id="sf-category" placeholder="Optional"
+                           style="width:100%;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);border-radius:var(--radius);font-family:inherit;font-size:13px;">
+                </div>
+                <div>
+                    <label class="text-small text-muted" style="display:block;margin-bottom:4px;">Crawl Mode</label>
+                    <select id="sf-mode"
+                            style="width:100%;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);border-radius:var(--radius);font-family:inherit;font-size:13px;">
+                        <option value="" selected>Auto-detect</option>
+                        <option value="static">Static (wget)</option>
+                        <option value="browser">Browser (SingleFile)</option>
+                    </select>
+                </div>
+                <div>
+                    <button type="submit" class="btn" id="sf-submit-btn">Submit</button>
+                </div>
+            </div>
+            <div id="sf-feedback" style="margin-top:8px;font-size:12px;display:none;"></div>
+        </form>
+    </div>
+
+    <!-- Stats row -->
+    <div class="stat-grid" style="grid-template-columns:repeat(4, 1fr);">
+        <div class="stat-card"><div class="label">Total Jobs</div><div class="value" id="sc-total">&mdash;</div></div>
+        <div class="stat-card"><div class="label">Active</div><div class="value" id="sc-active">&mdash;</div></div>
+        <div class="stat-card"><div class="label">Complete</div><div class="value" id="sc-complete">&mdash;</div></div>
+        <div class="stat-card"><div class="label">Failed</div><div class="value" id="sc-failed">&mdash;</div></div>
+    </div>
+
+    <!-- Jobs Table -->
+    <div class="panel">
+        <h3 class="section-title" style="margin-bottom:12px;">Scrape Jobs</h3>
+        <table class="data-table" id="sc-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>URL</th>
+                    <th>Title</th>
+                    <th>Mode</th>
+                    <th>Pages</th>
+                    <th>Status</th>
+                    <th>ZIM</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="sc-table-body">
+                <tr><td colspan="8" class="text-muted">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/scraper.js"></script>
+{% endblock %}
