@@ -2256,6 +2256,114 @@ def _build_kiwix_sources():
     }
 
 
+
+
+# ── Scraper API ──
+
+@app.route('/api/scraper/submit', methods=['POST'])
+def api_scraper_submit():
+    """Submit a new web scrape job."""
+    data = request.get_json(silent=True) or {}
+    url = (data.get('url') or '').strip()
+
+    if not url:
+        return jsonify({'error': 'url is required'}), 400
+    if not url.startswith(('http://', 'https://')):
+        return jsonify({'error': 'URL must start with http:// or https://'}), 400
+
+    config = get_config()
+    scraper_cfg = config.get('scraper', {})
+    language = data.get('language') or scraper_cfg.get('default_language', 'eng')
+    title = data.get('title', '').strip() or None
+    category = data.get('category', '').strip() or None
+
+    # Optional per-job reject pattern overrides
+    additional_reject_patterns = data.get('additional_reject_patterns')
+    skip_default_patterns = bool(data.get('skip_default_patterns', False))
+
+    # Optional crawl mode override (static, browser, redirect, or null for auto-detect)
+    crawl_mode = data.get('crawl_mode')
+    if crawl_mode and crawl_mode not in ('static', 'browser', 'redirect'):
+        return jsonify({'error': "crawl_mode must be 'static', 'browser', 'redirect', or null"}), 400
+
+    # Serialize additional patterns as JSON if provided
+    import json as _json
+    additional_json = _json.dumps(additional_reject_patterns) if additional_reject_patterns else None
+
+    db = StatusDB()
+    conn = db._get_conn()
+    conn.execute(
+        "INSERT INTO scrape_jobs (url, title, language, category, additional_reject_patterns, skip_default_patterns, crawl_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (url, title, language, category, additional_json, int(skip_default_patterns), crawl_mode)
+    )
+    conn.commit()
+    job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    logger.info(f"Scraper job {job_id} submitted: {url}")
+    return jsonify({'ok': True, 'job_id': job_id}), 201
+
+
+@app.route('/api/scraper/jobs')
+def api_scraper_jobs():
+    """List scrape jobs, optionally filtered by status."""
+    status_filter = request.args.get('status')
+    db = StatusDB()
+    jobs = db.get_scrape_jobs(status=status_filter)
+    return jsonify({'jobs': jobs})
+
+
+@app.route('/api/scraper/cancel/<int:job_id>', methods=['POST'])
+def api_scraper_cancel(job_id):
+    """Cancel a scrape job."""
+    import os as _os
+    import signal as _signal
+
+    db = StatusDB()
+    job = db.get_scrape_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+
+    if job['status'] in ('complete', 'cancelled'):
+        return jsonify({'error': f"Job already {job['status']}"}), 400
+
+    # Set cancelled in DB — the runner loop checks this between phases
+    db.update_scrape_job(job_id, status='cancelled')
+
+    # If there's an active subprocess, send SIGTERM
+    pid = job.get('subprocess_pid')
+    if pid:
+        try:
+            _os.kill(pid, _signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass  # Process already gone
+
+    logger.info(f"Scraper job {job_id} cancelled")
+    return jsonify({'ok': True})
+
+
+@app.route('/api/scraper/retry/<int:job_id>', methods=['POST'])
+def api_scraper_retry(job_id):
+    """Retry a failed or cancelled scrape job."""
+    db = StatusDB()
+    job = db.get_scrape_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+
+    if job['status'] not in ('failed', 'cancelled'):
+        return jsonify({'error': f"Job status is '{job['status']}', can only retry failed or cancelled jobs"}), 400
+
+    db.update_scrape_job(job_id,
+                         status='pending',
+                         error_message=None,
+                         subprocess_pid=None,
+                         crawl_mode=None,
+                         started_at=None,
+                         completed_at=None)
+
+    logger.info(f"Scraper job {job_id} reset to pending for retry")
+    return jsonify({'ok': True})
+
+
 # ── Metrics API ──
 
 @app.route('/api/metrics/history')

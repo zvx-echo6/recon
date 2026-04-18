@@ -413,6 +413,84 @@ peertube:
   rate_limit_delay: 0.5                 # Delay between video ingestions (seconds)
   poll_interval: 1800                    # Seconds between PeerTube acquisition polls (30 min)
 
+scraper:
+  workspace: /opt/recon/data/scraper      # Working directory for wget mirrors + ZIM builds
+  output_dir: /mnt/kiwix                  # Finished .zim files land here (kiwix-serve library)
+  rate_limit_delay: 0.5                   # Seconds between wget requests (--wait)
+  wait_random: 1.0                        # Random jitter added to wait (--random-wait range)
+  default_language: eng                   # ISO 639-3 language code for ZIM metadata
+  user_agent: "Mozilla/5.0 (compatible; RECON/1.0; +https://echo6.co)"
+  poll_interval: 300                      # Seconds between checking for pending scrape jobs
+  keep_workspace_on_failure: true         # Retain workspace for debugging when a job fails
+
+  # Default URL patterns rejected by wget --reject-regex.
+  # Covers common CMS junk across WordPress, Squarespace, Wix, Ghost, Drupal, etc.
+  # Per-job overrides: additional_reject_patterns (appended) or skip_default_patterns (bypass).
+  default_reject_patterns:
+    # WordPress
+    - '\?share='
+    - '\?replytocom='
+    - '\?like_comment='
+    - '/feed/'
+    - '/wp-json/'
+    - '/wp-login'
+    - '/wp-admin'
+    - '/wp-cron'
+    - '\?attachment_id='
+    - '/xmlrpc'
+    - '/trackback'
+    - '/comment-page-'
+    - '\?doing_wp_cron'
+    # Squarespace
+    - '\?format=json'
+    - '\?format=rss'
+    - '/api/'
+    # Wix
+    - '/_api/'
+    - '/_partials/'
+    # Ghost
+    - '/ghost/'
+    - '/p/'
+    # Drupal
+    - '\?q=comment'
+    - '\?q=node'
+    - '/user/login'
+    - '/user/register'
+    # General CMS / site chrome
+    - '/login'
+    - '/signup'
+    - '/register'
+    - '/cart'
+    - '/checkout'
+    - '/search\?'
+    - '/tag/'
+    - '/author/'
+    - '\?print='
+    - '\?pdf='
+    - '\?format=amp'
+    - '\?preview='
+    - '/rss'
+    - '/atom'
+    - '/cdn-cgi/'
+
+  # Pre-flight mode detection
+  preflight:
+    enabled: true
+    timeout: 30                    # Seconds for single-page Playwright fetch
+    min_static_size: 5120          # 5KB - wget HTML below this = suspect JS site
+    min_browser_size: 20480        # 20KB - browser HTML above this confirms JS
+    spa_markers:
+      - 'div#root'
+      - 'div#app'
+      - 'div#__next'
+
+  # SingleFile CLI settings (browser crawl mode)
+  singlefile:
+    executable: single-file
+    chromium_path: ""              # Auto-detected from Playwright if empty
+    crawl_max_depth: 10
+    crawl_delay: 2                 # Seconds between page fetches
+
 # Stream B: New Library Pipeline
 new_pipeline:
   # Disabled 2026-04-14 for refactor — see refactored-recon repo for context
