@@ -17,7 +17,7 @@
                            style="width:100%;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);border-radius:var(--radius);font-family:inherit;font-size:13px;">
                 </div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;">
+            <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;">
                 <div>
                     <label class="text-small text-muted" style="display:block;margin-bottom:4px;">Language</label>
                     <select id="sf-lang"
@@ -37,15 +37,6 @@
                     <label class="text-small text-muted" style="display:block;margin-bottom:4px;">Category</label>
                     <input type="text" id="sf-category" placeholder="Optional"
                            style="width:100%;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);border-radius:var(--radius);font-family:inherit;font-size:13px;">
-                </div>
-                <div>
-                    <label class="text-small text-muted" style="display:block;margin-bottom:4px;">Crawl Mode</label>
-                    <select id="sf-mode"
-                            style="width:100%;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);border-radius:var(--radius);font-family:inherit;font-size:13px;">
-                        <option value="" selected>Auto-detect</option>
-                        <option value="static">Static (wget)</option>
-                        <option value="browser">Browser (SingleFile)</option>
-                    </select>
                 </div>
                 <div>
                     <button type="submit" class="btn" id="sf-submit-btn">Submit</button>
@@ -75,7 +66,6 @@
                     <th>ID</th>
                     <th>URL</th>
                     <th>Title</th>
-                    <th>Mode</th>
                     <th>Pages</th>
                     <th>Status</th>
                     <th>ZIM</th>
@@ -83,7 +73,7 @@
                 </tr>
             </thead>
             <tbody id="sc-table-body">
-                <tr><td colspan="8" class="text-muted">Loading...</td></tr>
+                <tr><td colspan="7" class="text-muted">Loading...</td></tr>
             </tbody>
         </table>
     </div>

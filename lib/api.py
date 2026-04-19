@@ -44,6 +44,20 @@ app = Flask(__name__,
 
 app.config['MAX_CONTENT_LENGTH'] = None  # ZIM files can be multi-GB
 
+
+# ── Large ZIM upload support ──
+# Override stream factory so ZIM uploads write directly to /mnt/kiwix/
+# instead of /tmp (which is on the 96GB root disk and can't hold 100GB+ ZIMs).
+from flask import Request as _FlaskRequest
+
+class _LargeZimRequest(_FlaskRequest):
+    def _get_file_stream(self, total_content_length, content_type, filename=None, content_length=None):
+        if filename and filename.lower().endswith('.zim'):
+            return tempfile.NamedTemporaryFile('wb+', dir='/mnt/kiwix', prefix='.upload_', suffix='.tmp', delete=False)
+        return super()._get_file_stream(total_content_length, content_type, filename, content_length)
+
+app.request_class = _LargeZimRequest
+
 # ── Navigation Constants ──
 
 KNOWLEDGE_SUBNAV = [
@@ -2020,14 +2034,23 @@ def api_kiwix_upload():
 
     filename = secure_filename(f.filename)
     dest = os.path.join('/mnt/kiwix', filename)
-    tmp_dest = dest + '.tmp'
 
     try:
-        f.save(tmp_dest)
-        os.rename(tmp_dest, dest)
+        # Stream was written directly to /mnt/kiwix/ by _LargeZimRequest —
+        # rename in-place instead of copying 100GB+ through f.save()
+        if hasattr(f.stream, 'name') and f.stream.name:
+            tmp_path = f.stream.name
+            f.stream.close()
+            os.rename(tmp_path, dest)
+        else:
+            tmp_dest = dest + '.tmp'
+            f.save(tmp_dest)
+            os.rename(tmp_dest, dest)
     except Exception as e:
-        if os.path.exists(tmp_dest):
-            os.remove(tmp_dest)
+        # Clean up any temp files on failure
+        for p in [locals().get('tmp_path', ''), locals().get('tmp_dest', '')]:
+            if p and os.path.exists(p):
+                os.remove(p)
         return jsonify({'error': f'Save failed: {e}'}), 500
 
     # Register with kiwix-serve library
@@ -2320,24 +2343,11 @@ def api_scraper_submit():
     title = data.get('title', '').strip() or None
     category = data.get('category', '').strip() or None
 
-    # Optional per-job reject pattern overrides
-    additional_reject_patterns = data.get('additional_reject_patterns')
-    skip_default_patterns = bool(data.get('skip_default_patterns', False))
-
-    # Optional crawl mode override (static, browser, redirect, or null for auto-detect)
-    crawl_mode = data.get('crawl_mode')
-    if crawl_mode and crawl_mode not in ('static', 'browser', 'redirect'):
-        return jsonify({'error': "crawl_mode must be 'static', 'browser', 'redirect', or null"}), 400
-
-    # Serialize additional patterns as JSON if provided
-    import json as _json
-    additional_json = _json.dumps(additional_reject_patterns) if additional_reject_patterns else None
-
     db = StatusDB()
     conn = db._get_conn()
     conn.execute(
-        "INSERT INTO scrape_jobs (url, title, language, category, additional_reject_patterns, skip_default_patterns, crawl_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (url, title, language, category, additional_json, int(skip_default_patterns), crawl_mode)
+        "INSERT INTO scrape_jobs (url, title, language, category, crawl_mode) VALUES (?, ?, ?, ?, ?)",
+        (url, title, language, category, 'zimit')
     )
     conn.commit()
     job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -2358,8 +2368,6 @@ def api_scraper_jobs():
 @app.route('/api/scraper/cancel/<int:job_id>', methods=['POST'])
 def api_scraper_cancel(job_id):
     """Cancel a scrape job."""
-    import os as _os
-    import signal as _signal
 
     db = StatusDB()
     job = db.get_scrape_job(job_id)
@@ -2372,13 +2380,14 @@ def api_scraper_cancel(job_id):
     # Set cancelled in DB — the runner loop checks this between phases
     db.update_scrape_job(job_id, status='cancelled')
 
-    # If there's an active subprocess, send SIGTERM
-    pid = job.get('subprocess_pid')
-    if pid:
-        try:
-            _os.kill(pid, _signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass  # Process already gone
+    # Stop the Docker container if running
+    container_name = f'recon-scraper-{job_id}'
+    try:
+        import subprocess as _subprocess
+        _subprocess.run(['docker', 'rm', '-f', container_name],
+                        capture_output=True, timeout=10)
+    except Exception:
+        pass
 
     logger.info(f"Scraper job {job_id} cancelled")
     return jsonify({'ok': True})

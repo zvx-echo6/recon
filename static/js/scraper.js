@@ -12,7 +12,7 @@
             jobs.forEach(function(j) {
                 if (j.status === 'complete') complete++;
                 else if (j.status === 'failed' || j.status === 'cancelled') failed++;
-                else if (j.status === 'running' || j.status === 'pending') active++;
+                else if (j.status === 'scraping' || j.status === 'registering' || j.status === 'pending') active++;
             });
             RECON.set('sc-total', RECON.fmt(total));
             RECON.set('sc-active', RECON.fmt(active));
@@ -27,14 +27,12 @@
             var html = '';
             jobs.forEach(function(j) {
                 var badge = statusBadge(j.status);
-                var mode = j.crawl_mode ?
-                    '<span class="text-small">' + j.crawl_mode + '</span>' : '<span class="text-muted">\u2014</span>';
                 var pages = j.page_count ? RECON.fmt(j.page_count) : '\u2014';
                 var zim = j.zim_filename ?
                     '<span class="text-small">' + j.zim_filename + '</span>' : '\u2014';
                 var actions = '';
 
-                if (j.status === 'running' || j.status === 'pending') {
+                if (j.status === 'scraping' || j.status === 'registering' || j.status === 'pending') {
                     actions = '<button class="btn btn-danger" onclick="SCRAPER.cancel(' + j.id + ')">Cancel</button>';
                 } else if (j.status === 'failed' || j.status === 'cancelled') {
                     actions = '<button class="btn" onclick="SCRAPER.retry(' + j.id + ')">Retry</button> ' +
@@ -50,14 +48,13 @@
                     '<td>' + j.id + '</td>' +
                     '<td><a href="' + escHtml(j.url) + '" target="_blank" title="' + escHtml(j.url) + '">' + escHtml(displayUrl) + '</a></td>' +
                     '<td>' + escHtml(j.title || '\u2014') + '</td>' +
-                    '<td>' + mode + '</td>' +
                     '<td>' + pages + '</td>' +
                     '<td>' + badge + errorTooltip(j) + '</td>' +
                     '<td>' + zim + '</td>' +
                     '<td>' + actions + '</td>' +
                     '</tr>';
             });
-            if (!html) html = '<tr><td colspan="8" class="text-muted">No scrape jobs</td></tr>';
+            if (!html) html = '<tr><td colspan="7" class="text-muted">No scrape jobs</td></tr>';
             RECON.setHTML('sc-table-body', html);
         }).catch(function(err) {
             console.error('Scraper dashboard error:', err);
@@ -67,7 +64,8 @@
     function statusBadge(status) {
         var map = {
             'pending': '<span class="badge-detected">PENDING</span>',
-            'running': '<span class="badge-processing">RUNNING</span>',
+            'scraping': '<span class="badge-processing">SCRAPING</span>',
+            'registering': '<span class="badge-processing">REGISTERING</span>',
             'complete': '<span class="badge-complete">COMPLETE</span>',
             'failed': '<span class="badge-failed">FAILED</span>',
             'cancelled': '<span class="badge-detected">CANCELLED</span>'
@@ -98,12 +96,9 @@
         var title = document.getElementById('sf-title').value.trim();
         var lang = document.getElementById('sf-lang').value;
         var category = document.getElementById('sf-category').value.trim();
-        var mode = document.getElementById('sf-mode').value;
-
         if (title) body.title = title;
         if (lang) body.language = lang;
         if (category) body.category = category;
-        if (mode) body.crawl_mode = mode;
 
         var btn = document.getElementById('sf-submit-btn');
         var feedback = document.getElementById('sf-feedback');
