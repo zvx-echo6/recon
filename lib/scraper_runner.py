@@ -148,17 +148,17 @@ def _crawl_zimit(job, config, stop_event, db):
         description = f"{category} — mirror of {domain}"
 
     docker_cmd = [
-        'docker', 'run', '--rm',
+        'docker', 'run',
         '--name', container_name,
         '-v', f'{tmp_dir}:/output',
         docker_image,
-        '--url', url,
-        '--name', _sanitize_filename(domain),
-        '--lang', language,
+        'zimit',
+        '--seeds', url,
+        '--zim-lang', language,
         '--title', title,
         '--description', description[:80],
         '--output', '/output',
-        '--workers', str(docker_workers),
+        '-w', str(docker_workers),
     ]
 
     logger.info(f"Job {job_id}: Zimit crawl starting — {url}")
@@ -228,12 +228,19 @@ def _crawl_zimit(job, config, stop_event, db):
                     error_msg += f": {log_text[-500:]}"
             except Exception:
                 pass
+            # Remove container (no --rm flag, so we clean up manually)
+            subprocess.run(['docker', 'rm', '-f', container_name],
+                           capture_output=True, timeout=10)
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return 0, None, error_msg
 
     except Exception as e:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return 0, None, f"Zimit error: {e}"
+
+    # Remove container (no --rm flag, so we clean up manually after getting logs)
+    subprocess.run(['docker', 'rm', '-f', container_name],
+                   capture_output=True, timeout=10)
 
     # Find the output ZIM file
     zim_files = _glob.glob(os.path.join(tmp_dir, '*.zim'))
