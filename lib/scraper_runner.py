@@ -339,6 +339,9 @@ def _process_job(job, config, stop_event):
     except Exception as e:
         logger.warning(f"Job {job_id}: failed to signal kiwix-serve: {e}")
 
+    # Wait for kiwix-serve to reload its catalog after SIGHUP
+    time.sleep(3)
+
     zim_source_id = None
     try:
         from .zim_monitor import scan_zims
