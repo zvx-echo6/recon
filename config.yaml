@@ -413,6 +413,14 @@ peertube:
   rate_limit_delay: 0.5                 # Delay between video ingestions (seconds)
   poll_interval: 1800                    # Seconds between PeerTube acquisition polls (30 min)
 
+scraper:
+  workspace: /opt/recon/data/scraper      # Working directory (tmp dirs for Zimit output)
+  output_dir: /mnt/kiwix                  # Finished .zim files land here (kiwix-serve library)
+  default_language: eng                   # ISO 639-3 language code for ZIM metadata
+  poll_interval: 300                      # Seconds between checking for pending scrape jobs
+  docker_image: ghcr.io/openzim/zimit     # Zimit Docker image for web crawling
+  docker_workers: 2                       # Concurrent crawl workers inside Zimit container
+
 # Stream B: New Library Pipeline
 new_pipeline:
   # Disabled 2026-04-14 for refactor — see refactored-recon repo for context

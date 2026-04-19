@@ -105,6 +105,25 @@ class StatusDB:
         except Exception:
             pass  # column already exists
 
+        # Migration: add subprocess_pid column to scrape_jobs if missing
+        try:
+            conn.execute("ALTER TABLE scrape_jobs ADD COLUMN subprocess_pid INTEGER")
+        except Exception:
+            pass  # column already exists
+
+        # Migration: add reject pattern columns to scrape_jobs if missing
+        for col, coltype in [('additional_reject_patterns', 'TEXT'), ('skip_default_patterns', 'INTEGER DEFAULT 0')]:
+            try:
+                conn.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {col} {coltype}")
+            except Exception:
+                pass  # column already exists
+
+        # Migration: add crawl_mode column to scrape_jobs if missing
+        try:
+            conn.execute("ALTER TABLE scrape_jobs ADD COLUMN crawl_mode TEXT")
+        except Exception:
+            pass  # column already exists
+
         # Stream B: file_operations + duplicate_review tables
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS file_operations (
@@ -142,6 +161,28 @@ class StatusDB:
                 resolved_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_dupreview_status ON duplicate_review(status);
+
+            CREATE TABLE IF NOT EXISTS scrape_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                title TEXT,
+                language TEXT DEFAULT 'eng',
+                category TEXT,
+                status TEXT DEFAULT 'pending',
+                page_count INTEGER DEFAULT 0,
+                error_message TEXT,
+                zim_filename TEXT,
+                zim_source_id INTEGER,
+                workspace_path TEXT,
+                subprocess_pid INTEGER,
+                additional_reject_patterns TEXT,
+                skip_default_patterns INTEGER DEFAULT 0,
+                crawl_mode TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_scrape_status ON scrape_jobs(status);
         """)
         conn.commit()
 
@@ -405,6 +446,50 @@ class StatusDB:
             (new_path, new_filename, file_hash)
         )
         conn.commit()
+
+
+    # ── Scraper Job Helpers ─────────────────────────────────────
+
+    def get_pending_scrape_job(self):
+        """Fetch the oldest pending scrape job."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM scrape_jobs WHERE status = 'pending' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_scrape_job(self, job_id, **kwargs):
+        """Update arbitrary columns on a scrape job."""
+        if not kwargs:
+            return
+        conn = self._get_conn()
+        sets = []
+        vals = []
+        for k, v in kwargs.items():
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        vals.append(job_id)
+        conn.execute(f"UPDATE scrape_jobs SET {', '.join(sets)} WHERE id = ?", vals)
+        conn.commit()
+
+    def get_scrape_jobs(self, status=None):
+        """List scrape jobs, optionally filtered by status."""
+        conn = self._get_conn()
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM scrape_jobs WHERE status = ? ORDER BY id DESC", (status,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM scrape_jobs ORDER BY id DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_scrape_job(self, job_id):
+        """Get a single scrape job by ID."""
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM scrape_jobs WHERE id = ?", (job_id,)).fetchone()
+        return dict(row) if row else None
 
     # ── Stream B: File Operations ───────────────────────────────────
 
