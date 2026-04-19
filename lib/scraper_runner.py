@@ -190,12 +190,12 @@ def _crawl_zimit(job, config, stop_event, db):
                         ['docker', 'logs', '--tail', '20', container_name],
                         capture_output=True, text=True, timeout=10
                     )
-                    if log_result.returncode == 0 and log_result.stderr:
-                        # Zimit/Browsertrix logs page counts — look for numbers
-                        lines = log_result.stderr.strip().split('\n')
+                    if log_result.returncode == 0:
+                        # Browsertrix logs JSON with "crawled":N — check both stdout and stderr
+                        log_text = log_result.stdout or log_result.stderr or ''
+                        lines = log_text.strip().split('\n')
                         for line in reversed(lines):
-                            # Look for patterns like "X pages" or page count indicators
-                            match = re.search(r'(\d+)\s+page', line, re.IGNORECASE)
+                            match = re.search(r'"crawled":(\d+)', line)
                             if match:
                                 count = int(match.group(1))
                                 if count > 0:
