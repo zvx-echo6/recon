@@ -154,6 +154,7 @@ def _crawl_zimit(job, config, stop_event, db):
         docker_image,
         'zimit',
         '--seeds', url,
+        '--name', _sanitize_filename(domain),
         '--zim-lang', language,
         '--title', title,
         '--description', description[:80],
