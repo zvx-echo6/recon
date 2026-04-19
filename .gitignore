@@ -27,3 +27,4 @@ recon.db
 
 # Kiwix binary tools (installed from tarball)
 bin/
+status.db

@@ -2060,23 +2060,24 @@ def api_kiwix_upload():
 
 
 
-@app.route('/api/kiwix/remove/<int:source_id>', methods=['POST'])
-def api_kiwix_remove(source_id):
-    """Remove a ZIM source: delete vectors, DB records, library entry, and file."""
+def _full_zim_cleanup(source_id):
+    """Full ZIM cleanup: Qdrant vectors, DB records, kiwix-manage, SIGHUP, file delete.
+    Returns dict with results. Caller handles cache refresh."""
     import subprocess
+    import signal
     import requests as req
 
     db = StatusDB()
     conn = db._get_conn()
     row = conn.execute("SELECT * FROM zim_sources WHERE id = ?", (source_id,)).fetchone()
     if not row:
-        return jsonify({'error': 'Source not found'}), 404
+        return None
 
     zim_source = dict(row)
     zim_filename = zim_source['zim_filename']
     zim_path = zim_source['zim_path']
     zim_title = zim_source.get('title', zim_filename)
-    results = {'vectors_deleted': 0, 'docs_deleted': 0, 'file_deleted': False}
+    results = {'vectors_deleted': 0, 'docs_deleted': 0, 'file_deleted': False, 'scrape_jobs_deleted': 0}
 
     # Step 1: Find all document hashes for this ZIM source
     doc_hashes = [r['hash'] for r in conn.execute(
@@ -2135,13 +2136,22 @@ def api_kiwix_remove(source_id):
 
     # Step 4: Remove from kiwix-serve library
     try:
-        # Get the book ID from library.xml
         subprocess.run(
             ['/opt/recon/bin/kiwix-manage', '/mnt/kiwix/library.xml', 'remove', zim_filename.replace('.zim', '')],
             capture_output=True, text=True, timeout=10
         )
     except Exception as e:
         logger.warning(f"kiwix-manage remove failed: {e}")
+
+    # Step 4b: SIGHUP kiwix-serve to reload library
+    try:
+        result = subprocess.run(['pidof', 'kiwix-serve'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            pid = int(result.stdout.strip().split()[0])
+            os.kill(pid, signal.SIGHUP)
+            logger.info(f"Sent SIGHUP to kiwix-serve (pid {pid})")
+    except Exception as e:
+        logger.warning(f"Failed to signal kiwix-serve: {e}")
 
     # Step 5: Delete the ZIM file
     if os.path.isfile(zim_path):
@@ -2152,13 +2162,37 @@ def api_kiwix_remove(source_id):
             logger.warning(f"ZIM file delete failed: {e}")
             results['file_deleted'] = False
 
+    # Step 6: Delete any linked scrape_jobs rows
+    try:
+        res = conn.execute("DELETE FROM scrape_jobs WHERE zim_source_id = ?", (source_id,))
+        conn.commit()
+        results['scrape_jobs_deleted'] = res.rowcount
+    except Exception as e:
+        logger.warning(f"scrape_jobs cleanup failed: {e}")
+
+    logger.info(f"Full ZIM cleanup for source {source_id} ('{zim_title}'): {results}")
+    return results
+
+
+@app.route('/api/kiwix/remove/<int:source_id>', methods=['POST'])
+def api_kiwix_remove(source_id):
+    """Remove a ZIM source: delete vectors, DB records, library entry, and file."""
+    db = StatusDB()
+    conn = db._get_conn()
+    row = conn.execute("SELECT * FROM zim_sources WHERE id = ?", (source_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Source not found'}), 404
+
+    results = _full_zim_cleanup(source_id)
+    if results is None:
+        return jsonify({'error': 'Source not found during cleanup'}), 404
+
     # Refresh cache
     try:
         _cache['kiwix_sources'] = _build_kiwix_sources()
     except Exception:
         pass
 
-    logger.info(f"Removed ZIM source '{zim_title}': {results}")
     return jsonify({'ok': True, 'results': results})
 
 
@@ -2375,20 +2409,60 @@ def api_scraper_retry(job_id):
 
 @app.route('/api/scraper/delete/<int:job_id>', methods=['POST'])
 def api_scraper_delete(job_id):
-    """Delete a scrape job (only if not currently running)."""
+    """Delete a scrape job and clean up any associated ZIM artifacts."""
+    import subprocess
+    import signal
+
     db = StatusDB()
     job = db.get_scrape_job(job_id)
     if not job:
         return jsonify({'error': 'Job not found'}), 404
 
     if job['status'] == 'running':
-        return jsonify({'error': 'Cannot delete a running job — cancel it first'}), 400
+        return jsonify({'error': 'Cannot delete a running job \u2014 cancel it first'}), 400
 
+    zim_cleanup_results = None
+
+    # If the job has a linked zim_source, do full cleanup
+    if job.get('zim_source_id'):
+        zim_cleanup_results = _full_zim_cleanup(job['zim_source_id'])
+        try:
+            _cache['kiwix_sources'] = _build_kiwix_sources()
+        except Exception:
+            pass
+    elif job.get('zim_filename'):
+        # No zim_source row, but there may be an orphan file + library entry
+        zim_path = os.path.join('/mnt/kiwix', job['zim_filename'])
+        if os.path.isfile(zim_path):
+            try:
+                os.remove(zim_path)
+                logger.info(f"Deleted orphan ZIM file: {zim_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete orphan ZIM file {zim_path}: {e}")
+            try:
+                subprocess.run(
+                    ['/opt/recon/bin/kiwix-manage', '/mnt/kiwix/library.xml', 'remove',
+                     job['zim_filename'].replace('.zim', '')],
+                    capture_output=True, text=True, timeout=10
+                )
+            except Exception as e:
+                logger.warning(f"kiwix-manage remove failed for orphan: {e}")
+            try:
+                result = subprocess.run(['pidof', 'kiwix-serve'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and result.stdout.strip():
+                    pid = int(result.stdout.strip().split()[0])
+                    os.kill(pid, signal.SIGHUP)
+                    logger.info(f"Sent SIGHUP to kiwix-serve (pid {pid})")
+            except Exception as e:
+                logger.warning(f"Failed to signal kiwix-serve: {e}")
+
+    # Delete the scrape_jobs row (may already be gone if _full_zim_cleanup deleted it)
     conn = db._get_conn()
     conn.execute("DELETE FROM scrape_jobs WHERE id = ?", (job_id,))
     conn.commit()
-    logger.info(f"Scraper job {job_id} deleted")
-    return jsonify({'ok': True})
+
+    logger.info(f"Scraper job {job_id} deleted (zim_cleanup={zim_cleanup_results})")
+    return jsonify({'ok': True, 'zim_cleanup': zim_cleanup_results})
 
 
 @app.route('/api/scraper/clear-failed', methods=['POST'])
