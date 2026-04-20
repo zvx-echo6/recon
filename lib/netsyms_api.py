@@ -1,9 +1,9 @@
 """
-RECON Netsyms API + Geocode chain — Flask Blueprints.
+RECON Netsyms API + Geocode — Flask Blueprints.
 
 GET /api/netsyms/lookup?q=<free text>&country=<optional>
 GET /api/netsyms/health
-GET /api/geocode?q=<query>   (full 3-tier chain: address_book → netsyms → photon)
+GET /api/geocode?q=<query>&limit=<N>  (Photon-first search with ranked results)
 """
 
 from flask import Blueprint, request, jsonify
@@ -37,12 +37,26 @@ def api_netsyms_health():
 
 @geocode_bp.route('/api/geocode')
 def api_geocode():
+    """
+    Photon-first geocoding with ranked candidates.
+
+    GET /api/geocode?q=<query>&limit=<N>
+
+    Always returns 200 OK with:
+      {query, results: [{name, lat, lon, source, confidence, type, raw, ...}], count}
+
+    - source: "address_book" | "coordinates" | "photon"
+    - confidence: "exact" | "high" | "medium" | "low"
+    - type: "nickname" | "coordinates" | "street_address" | "poi" | "locality"
+    - labeled_as: present when result is within 75m of an address book entry
+    - Empty results array is valid (no match). No 404s.
+    """
     q = request.args.get('q', '').strip()
-    if not q:
-        return jsonify({'error': 'Missing q parameter'}), 400
+    limit = request.args.get('limit', '10')
+    try:
+        limit = max(1, min(int(limit), 20))
+    except (ValueError, TypeError):
+        limit = 10
 
-    result = nav_tools.geocode(q)
-    if result is None:
-        return jsonify({'error': 'No results', 'query': q}), 404
-
+    result = nav_tools.geocode(q, limit=limit)
     return jsonify(result)

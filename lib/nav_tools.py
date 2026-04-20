@@ -1,5 +1,6 @@
 """Navigation tools: geocoding via Photon and routing via Valhalla."""
 
+import math
 import re
 import requests
 
@@ -10,178 +11,242 @@ logger = setup_logging('recon.nav_tools')
 PHOTON_URL = "http://localhost:2322"
 VALHALLA_URL = "http://localhost:8002"
 
-_COORD_RE = re.compile(r'^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$')
+# Regional bias for Photon searches (Idaho-centric for Matt's use case).
+# Adjustable — Photon uses these to rank nearby results higher.
+GEOCODE_BIAS_LAT = 42.5736
+GEOCODE_BIAS_LON = -114.6066
+GEOCODE_BIAS_ZOOM = 10
+
+# Distance threshold (meters) for annotating Photon results with address
+# book labels.  75m covers GPS jitter + geocoder imprecision.
+ADDRESS_BOOK_ANNOTATION_RADIUS_M = 75
+
+# Coordinate regex — handles comma-separated and space-separated forms.
+_COORD_RE = re.compile(
+    r'^\s*(-?\d+\.\d+)\s*[,\s]\s*(-?\d+\.\d+)\s*$'
+)
 
 VALID_MODES = {"auto", "pedestrian", "bicycle", "truck"}
 
 
 def _parse_coords(text: str):
-    """Return (lat, lon) if text looks like coordinates, else None."""
+    """Return (lat, lon) if text looks like coordinates with valid bounds, else None."""
     m = _COORD_RE.match(text.strip())
-    if m:
-        return float(m.group(1)), float(m.group(2))
+    if not m:
+        return None
+    lat, lon = float(m.group(1)), float(m.group(2))
+    if -90 <= lat <= 90 and -180 <= lon <= 180:
+        return lat, lon
     return None
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    """Haversine distance in meters between two (lat, lon) points."""
+    R = 6_371_000  # Earth radius in meters
+    rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _classify_photon_feature(props, index):
+    """Classify a Photon feature into (type, confidence)."""
+    osm_key = props.get('osm_key', '')
+    osm_value = props.get('osm_value', '')
+    feat_type = props.get('type', '')
+    has_housenumber = bool(props.get('housenumber'))
+
+    # Type classification
+    if has_housenumber or osm_value in ('house', 'residential'):
+        result_type = 'street_address'
+    elif feat_type in ('city', 'town', 'village', 'hamlet', 'county', 'state', 'country'):
+        result_type = 'locality'
+    elif osm_key in ('amenity', 'shop', 'tourism', 'leisure') or osm_value:
+        result_type = 'poi'
+    else:
+        result_type = 'poi'
+
+    # Confidence — simple positional heuristic
+    if index == 0:
+        confidence = 'high'
+    elif index <= 2:
+        confidence = 'medium'
+    else:
+        confidence = 'low'
+
+    return result_type, confidence
+
+
+def _photon_feature_to_name(props):
+    """Build a display name from a Photon feature's properties."""
+    parts = []
+    housenumber = props.get('housenumber')
+    street = props.get('street')
+    name = props.get('name', '')
+
+    if housenumber and street:
+        parts.append(f"{housenumber} {street}")
+        if name and name != street:
+            parts.append(name)
+    elif name:
+        parts.append(name)
+    elif street:
+        parts.append(street)
+
+    for key in ('city', 'county', 'state', 'country'):
+        v = props.get(key)
+        if v and (not parts or v != parts[-1]):
+            parts.append(v)
+
+    return ', '.join(p for p in parts if p) or 'Unknown'
+
+
+def _annotate_with_address_book(results):
+    """Add labeled_as to results within ADDRESS_BOOK_ANNOTATION_RADIUS_M of an address book entry."""
+    try:
+        from . import address_book
+        entries = address_book.load()
+    except Exception:
+        return
+
+    for result in results:
+        rlat, rlon = result.get('lat'), result.get('lon')
+        if rlat is None or rlon is None:
+            continue
+        for entry in entries:
+            elat, elon = entry.get('lat'), entry.get('lon')
+            if elat is None or elon is None:
+                continue
+            dist = _haversine_m(rlat, rlon, elat, elon)
+            if dist <= ADDRESS_BOOK_ANNOTATION_RADIUS_M:
+                result['labeled_as'] = entry['name']
+                break
 
 
 def _geocode(query: str):
-    """Geocode a place name via address book then Photon. Returns (lat, lon, display_name) or raises."""
-    coords = _parse_coords(query)
-    if coords:
-        return coords[0], coords[1], query
+    """Geocode a place name via address book then Photon. Returns (lat, lon, display_name) or raises.
 
-    # ── Address book lookup (before Photon) ──
-    try:
-        from . import address_book
-        match = address_book.lookup(query)
-        if match and match['confidence'] == 'exact' and match.get('lat') and match.get('lon'):
-            logger.info("Address book exact match: %r → %s (%s, %s)",
-                        query, match['name'], match['lat'], match['lon'])
-            return match['lat'], match['lon'], match.get('address') or match['name']
-        elif match and match['confidence'] == 'partial':
-            logger.info("Address book partial match: %r → %s (falling through to Photon)",
-                        query, match['name'])
-    except Exception as e:
-        logger.debug("Address book lookup failed: %s", e)
-
-    # ── Photon geocoding ──
-    try:
-        resp = requests.get(
-            f"{PHOTON_URL}/api",
-            params={"q": query, "limit": 1},
-            timeout=10,
-        )
-        resp.raise_for_status()
-    except requests.RequestException:
-        raise RuntimeError("Navigation service unavailable")
-
-    data = resp.json()
-    features = data.get("features", [])
-    if not features:
+    Used internally by route() — returns a simple (lat, lon, name) tuple.
+    For the full ranked-results API, use geocode() instead.
+    """
+    result = geocode(query, limit=1)
+    results = result.get('results', [])
+    if not results:
         raise ValueError(f"Could not find location: {query}")
-
-    props = features[0]["properties"]
-    coords = features[0]["geometry"]["coordinates"]  # [lon, lat]
-    parts = [props.get("name", "")]
-    for key in ("city", "county", "state", "country"):
-        v = props.get(key)
-        if v and v != parts[-1]:
-            parts.append(v)
-    display = ", ".join(p for p in parts if p)
-    return coords[1], coords[0], display  # lat, lon
+    top = results[0]
+    return top['lat'], top['lon'], top['name']
 
 
 
-def geocode(query: str):
+def geocode(query: str, limit: int = 10):
     """
-    Three-tier geocode chain returning a consistent shape.
+    Photon-first geocoding with ranked results.
 
-    Chain: address_book (exact) → netsyms → photon.
-    Returns dict with {name, lat, lon, source, raw} or None.
+    Chain:
+      1. Coordinate detection (pre-search)
+      2. Address book nickname short-circuit (single-word queries only)
+      3. Photon search (primary, biased to Idaho region)
+      4. Address book proximity annotation (post-Photon, 75m radius)
+
+    Returns dict: {query, results: [...], count: N}
+    Always 200-safe — empty results list is valid, never raises.
+
+    Netsyms is preserved at /api/netsyms/lookup for direct structured
+    access.  Enrichment of Photon street-address hits with USPS plus4
+    from Netsyms is a planned follow-up (not wired here).
     """
-    coords = _parse_coords(query)
+    limit = max(1, min(limit, 20))
+    q = (query or '').strip()
+    empty = {'query': q, 'results': [], 'count': 0}
+
+    if not q:
+        return empty
+
+    # ── 1. Coordinate detection ──
+    coords = _parse_coords(q)
     if coords:
         return {
-            'name': query,
-            'lat': coords[0],
-            'lon': coords[1],
-            'source': 'coordinates',
-            'raw': None,
+            'query': q,
+            'results': [{
+                'name': q,
+                'lat': coords[0],
+                'lon': coords[1],
+                'source': 'coordinates',
+                'confidence': 'exact',
+                'type': 'coordinates',
+                'raw': None,
+            }],
+            'count': 1,
         }
 
-    # ── Tier 1: Address book (exact match only) ──
-    ab_partial = None
+    # ── 2. Address book nickname short-circuit ──
+    # Only short-circuit on single-word queries ("home", "work").
+    # Multi-word queries fall through to Photon for proper ranking.
+    normalized_q = ' '.join(q.lower().replace(',', ' ').split())
+    is_single_word = ' ' not in normalized_q
     try:
         from . import address_book
-        match = address_book.lookup(query)
-        if match and match['confidence'] == 'exact' and match.get('lat') and match.get('lon'):
-            logger.info("geocode: address_book exact match: %r → %s", query, match['name'])
+        ab_match = address_book.lookup(q)
+        if (ab_match
+                and ab_match['confidence'] == 'exact'
+                and ab_match.get('lat') and ab_match.get('lon')
+                and is_single_word):
+            logger.info("geocode: nickname short-circuit %r → %s", q, ab_match['name'])
             return {
-                'name': match.get('address') or match['name'],
-                'lat': match['lat'],
-                'lon': match['lon'],
-                'source': 'address_book',
-                'raw': match,
+                'query': q,
+                'results': [{
+                    'name': ab_match.get('address') or ab_match['name'],
+                    'lat': ab_match['lat'],
+                    'lon': ab_match['lon'],
+                    'source': 'address_book',
+                    'confidence': 'exact',
+                    'type': 'nickname',
+                    'raw': ab_match,
+                }],
+                'count': 1,
             }
-        elif match and match['confidence'] == 'partial':
-            logger.info("geocode: address_book partial match: %r → %s (continuing chain)",
-                        query, match['name'])
-            ab_partial = match
     except Exception as e:
         logger.debug("geocode: address_book lookup failed: %s", e)
 
-    # ── Tier 2: Netsyms (159M US+CA addresses) ──
-    netsyms_result = None
+    # ── 3. Photon search (primary) ──
+    results = []
     try:
-        from . import netsyms
-        results = netsyms.lookup_free_text(query)
-        if results:
-            # Prefer results with plus4 (more precise)
-            best = results[0]
-            for r in results:
-                if r.get('plus4') and not best.get('plus4'):
-                    best = r
-                    break
-            addr_parts = [best['number'], best['street']]
-            if best.get('street2'):
-                addr_parts.append(best['street2'])
-            addr_parts.extend([best['city'], best['state'], best['zipcode']])
-            display = ' '.join(p for p in addr_parts if p)
-            netsyms_result = {
-                'name': display,
-                'lat': best['lat'],
-                'lon': best['lon'],
-                'source': 'netsyms',
-                'raw': best,
-            }
-            logger.info("geocode: netsyms match: %r → %s", query, display)
-            return netsyms_result
-    except Exception as e:
-        logger.debug("geocode: netsyms lookup failed: %s", e)
-
-    # ── Tier 3: Photon (global geocoding) ──
-    try:
-        resp = requests.get(
-            f"{PHOTON_URL}/api",
-            params={"q": query, "limit": 1},
-            timeout=2,
-        )
+        params = {
+            'q': q,
+            'limit': limit,
+            'lat': GEOCODE_BIAS_LAT,
+            'lon': GEOCODE_BIAS_LON,
+            'zoom': GEOCODE_BIAS_ZOOM,
+        }
+        resp = requests.get(f"{PHOTON_URL}/api", params=params, timeout=5)
         resp.raise_for_status()
         data = resp.json()
-        features = data.get("features", [])
-        if features:
-            props = features[0]["properties"]
-            coords = features[0]["geometry"]["coordinates"]  # [lon, lat]
-            parts = [props.get("name", "")]
-            for key in ("city", "county", "state", "country"):
-                v = props.get(key)
-                if v and v != parts[-1]:
-                    parts.append(v)
-            display = ", ".join(p for p in parts if p)
-            logger.info("geocode: photon match: %r → %s", query, display)
-            return {
-                'name': display,
-                'lat': coords[1],
-                'lon': coords[0],
+
+        for i, feature in enumerate(data.get('features', [])):
+            props = feature.get('properties', {})
+            geom_coords = feature.get('geometry', {}).get('coordinates', [0, 0])
+            result_type, confidence = _classify_photon_feature(props, i)
+            name = _photon_feature_to_name(props)
+            results.append({
+                'name': name,
+                'lat': geom_coords[1],
+                'lon': geom_coords[0],
                 'source': 'photon',
+                'confidence': confidence,
+                'type': result_type,
                 'raw': props,
-            }
+            })
+    except requests.RequestException as e:
+        logger.warning("geocode: Photon request failed: %s", e)
     except Exception as e:
-        logger.debug("geocode: photon lookup failed: %s", e)
+        logger.warning("geocode: Photon parse error: %s", e)
 
-    # ── Fallback: address book partial match ──
-    if ab_partial and ab_partial.get('lat') and ab_partial.get('lon'):
-        logger.info("geocode: falling back to address_book partial: %r → %s",
-                    query, ab_partial['name'])
-        return {
-            'name': ab_partial.get('address') or ab_partial['name'],
-            'lat': ab_partial['lat'],
-            'lon': ab_partial['lon'],
-            'source': 'address_book',
-            'raw': ab_partial,
-        }
+    # ── 4. Address book annotation (post-Photon) ──
+    _annotate_with_address_book(results)
 
-    logger.info("geocode: no match for %r across all tiers", query)
-    return None
+    logger.info("geocode: %r → %d results", q, len(results))
+    return {'query': q, 'results': results, 'count': len(results)}
 
 
 def reverse_geocode(lat: float, lon: float) -> str:
