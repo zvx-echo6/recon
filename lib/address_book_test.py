@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import address_book
 
 TESTS = [
+    # ── Existing tests ──
     ("lookup('home') → exact",
      lambda: address_book.lookup("home"),
      lambda r: r is not None and r['confidence'] == 'exact' and r['id'] == 'home'),
@@ -32,6 +33,39 @@ TESTS = [
     ("list_all() → 1 entry",
      lambda: address_book.list_all(),
      lambda r: isinstance(r, list) and len(r) == 1 and r[0]['id'] == 'home'),
+
+    # ── New prefix+boundary tests ──
+    ("lookup('214 north st filer') → exact (query starts with alias)",
+     lambda: address_book.lookup("214 north st filer"),
+     lambda r: r is not None and r['confidence'] == 'exact' and r['id'] == 'home'),
+
+    ("lookup('214 North St Filer ID') → exact (case + trailing state)",
+     lambda: address_book.lookup("214 North St Filer ID"),
+     lambda r: r is not None and r['confidence'] == 'exact' and r['id'] == 'home'),
+
+    ("lookup('214 north st, filer, id') → exact (commas stripped)",
+     lambda: address_book.lookup("214 north st, filer, id"),
+     lambda r: r is not None and r['confidence'] == 'exact' and r['id'] == 'home'),
+
+    ("lookup('home today') → exact (short alias + trailing text)",
+     lambda: address_book.lookup("home today"),
+     lambda r: r is not None and r['confidence'] == 'exact' and r['id'] == 'home'),
+
+    ("lookup('214') → partial (query is prefix of alias)",
+     lambda: address_book.lookup("214"),
+     lambda r: r is not None and r['confidence'] == 'partial'),
+
+    ("lookup('214 n') → partial (partial prefix of alias)",
+     lambda: address_book.lookup("214 n"),
+     lambda r: r is not None and r['confidence'] == 'partial'),
+
+    ("lookup('completely unrelated query') → None",
+     lambda: address_book.lookup("completely unrelated query"),
+     lambda r: r is None),
+
+    ("lookup('214 north streets of filer') → None (no word boundary after st)",
+     lambda: address_book.lookup("214 north streets of filer"),
+     lambda r: r is None),
 ]
 
 passed = 0

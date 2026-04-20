@@ -8,6 +8,7 @@ Config: /opt/recon/config/address_book.yaml
 """
 
 import os
+import re
 import threading
 
 import yaml
@@ -79,49 +80,76 @@ def load():
     return _entries
 
 
+def _normalize(text: str) -> str:
+    """Lowercase, strip, remove commas, collapse whitespace."""
+    t = text.strip().lower()
+    t = t.replace(',', ' ')
+    return ' '.join(t.split())
+
+
 def lookup(query: str):
     """
     Look up a query against name and aliases.
 
     Returns dict with the matching entry plus a 'confidence' field:
-      - "exact": full name or alias match
-      - "partial": query is a substring of an alias or name (or vice versa)
+      - "exact": full name/alias match, OR query starts with alias + word boundary
+      - "partial": alias starts with query + word boundary, or alias appears
+        as a contiguous token sequence inside the query
       - None if no match
+
+    Matching order (first exact wins, else first partial):
+      1. normalized(query) == normalized(name or alias)         → exact
+      2. normalized(query) starts with normalized(alias) + " "  → exact
+      3. normalized(alias) starts with normalized(query) + " "  → partial
+      4. normalized(alias) is a contiguous token sub-sequence    → partial
     """
     _reload_if_changed()
-    q = query.strip().lower()
+    q = _normalize(query)
     if not q:
         return None
 
-    best = None
-    best_confidence = None
+    first_exact = None
+    first_partial = None
 
     for entry in _entries:
-        # Exact match on name
-        if q == entry['name'].lower():
-            return {**entry, 'confidence': 'exact'}
+        norm_name = _normalize(entry['name'])
+        check_aliases = [_normalize(a) for a in entry.get('aliases', [])]
+        all_forms = [norm_name] + check_aliases
 
-        # Exact match on any alias
-        if q in entry['aliases']:
-            return {**entry, 'confidence': 'exact'}
+        for form in all_forms:
+            if not form:
+                continue
 
-        # Partial: query is substring of name/alias, or name/alias is substring of query
-        name_lower = entry['name'].lower()
-        if q in name_lower or name_lower in q:
-            if best is None:
-                best = entry
-                best_confidence = 'partial'
-            continue
+            # Rule 1: exact match
+            if q == form:
+                return {**entry, 'confidence': 'exact'}
 
-        for alias in entry['aliases']:
-            if q in alias or alias in q:
-                if best is None:
-                    best = entry
-                    best_confidence = 'partial'
-                break
+            # Rule 2: query starts with alias + word boundary
+            if q.startswith(form + ' '):
+                if first_exact is None:
+                    first_exact = entry
+                continue
 
-    if best is not None:
-        return {**best, 'confidence': best_confidence}
+            # Rule 3: alias starts with query (user still typing)
+            if form.startswith(q) and len(q) < len(form):
+                if first_partial is None:
+                    first_partial = entry
+                continue
+
+            # Rule 4: alias is contiguous token sub-sequence in query
+            # Build regex: token1\s+token2\s+...tokenN
+            tokens = form.split()
+            if len(tokens) >= 1:
+                pattern = r'(?:^|\s)' + r'\s+'.join(re.escape(t) for t in tokens) + r'(?:\s|$)'
+                if re.search(pattern, q):
+                    if first_partial is None:
+                        first_partial = entry
+
+    if first_exact is not None:
+        return {**first_exact, 'confidence': 'exact'}
+
+    if first_partial is not None:
+        return {**first_partial, 'confidence': 'partial'}
 
     return None
 
