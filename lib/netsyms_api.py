@@ -60,3 +60,49 @@ def api_geocode():
 
     result = nav_tools.geocode(q, limit=limit)
     return jsonify(result)
+
+
+@geocode_bp.route('/api/reverse')
+def api_reverse():
+    """
+    Reverse geocode coordinates via Photon.
+
+    GET /api/reverse?lat=X&lon=Y
+
+    Returns same shape as /api/geocode:
+      {query: "lat,lon", results: [{name, lat, lon, source, type, raw, ...}], count}
+
+    Returns 200 OK with empty results on no match. 400 on invalid coords.
+    """
+    try:
+        lat = float(request.args.get('lat', ''))
+        lon = float(request.args.get('lon', ''))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Missing or invalid lat/lon parameters'}), 400
+
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return jsonify({'error': 'Coordinates out of range'}), 400
+
+    query_str = f"{lat},{lon}"
+
+    try:
+        import requests as http_requests
+        resp = http_requests.get(
+            "http://localhost:2322/reverse",
+            params={"lat": lat, "lon": lon, "limit": 1},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        features = data.get("features", [])
+    except Exception:
+        logger.warning("Photon reverse geocode failed for %s", query_str)
+        return jsonify({'query': query_str, 'results': [], 'count': 0})
+
+    if not features:
+        return jsonify({'query': query_str, 'results': [], 'count': 0})
+
+    from .geocode import _parse_photon_features
+    results = _parse_photon_features(features, source='photon_reverse')
+
+    return jsonify({'query': query_str, 'results': results, 'count': len(results)})
