@@ -48,6 +48,11 @@ app.config['MAX_CONTENT_LENGTH'] = None  # ZIM files can be multi-GB
 from .address_book_api import address_book_bp
 app.register_blueprint(address_book_bp)
 
+# ── Netsyms + Geocode Blueprints ──
+from .netsyms_api import netsyms_bp, geocode_bp
+app.register_blueprint(netsyms_bp)
+app.register_blueprint(geocode_bp)
+
 
 # ── Navigation Constants ──
 

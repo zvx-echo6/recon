@@ -70,6 +70,120 @@ def _geocode(query: str):
     return coords[1], coords[0], display  # lat, lon
 
 
+
+def geocode(query: str):
+    """
+    Three-tier geocode chain returning a consistent shape.
+
+    Chain: address_book (exact) → netsyms → photon.
+    Returns dict with {name, lat, lon, source, raw} or None.
+    """
+    coords = _parse_coords(query)
+    if coords:
+        return {
+            'name': query,
+            'lat': coords[0],
+            'lon': coords[1],
+            'source': 'coordinates',
+            'raw': None,
+        }
+
+    # ── Tier 1: Address book (exact match only) ──
+    ab_partial = None
+    try:
+        from . import address_book
+        match = address_book.lookup(query)
+        if match and match['confidence'] == 'exact' and match.get('lat') and match.get('lon'):
+            logger.info("geocode: address_book exact match: %r → %s", query, match['name'])
+            return {
+                'name': match.get('address') or match['name'],
+                'lat': match['lat'],
+                'lon': match['lon'],
+                'source': 'address_book',
+                'raw': match,
+            }
+        elif match and match['confidence'] == 'partial':
+            logger.info("geocode: address_book partial match: %r → %s (continuing chain)",
+                        query, match['name'])
+            ab_partial = match
+    except Exception as e:
+        logger.debug("geocode: address_book lookup failed: %s", e)
+
+    # ── Tier 2: Netsyms (159M US+CA addresses) ──
+    netsyms_result = None
+    try:
+        from . import netsyms
+        results = netsyms.lookup_free_text(query)
+        if results:
+            # Prefer results with plus4 (more precise)
+            best = results[0]
+            for r in results:
+                if r.get('plus4') and not best.get('plus4'):
+                    best = r
+                    break
+            addr_parts = [best['number'], best['street']]
+            if best.get('street2'):
+                addr_parts.append(best['street2'])
+            addr_parts.extend([best['city'], best['state'], best['zipcode']])
+            display = ' '.join(p for p in addr_parts if p)
+            netsyms_result = {
+                'name': display,
+                'lat': best['lat'],
+                'lon': best['lon'],
+                'source': 'netsyms',
+                'raw': best,
+            }
+            logger.info("geocode: netsyms match: %r → %s", query, display)
+            return netsyms_result
+    except Exception as e:
+        logger.debug("geocode: netsyms lookup failed: %s", e)
+
+    # ── Tier 3: Photon (global geocoding) ──
+    try:
+        resp = requests.get(
+            f"{PHOTON_URL}/api",
+            params={"q": query, "limit": 1},
+            timeout=2,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        features = data.get("features", [])
+        if features:
+            props = features[0]["properties"]
+            coords = features[0]["geometry"]["coordinates"]  # [lon, lat]
+            parts = [props.get("name", "")]
+            for key in ("city", "county", "state", "country"):
+                v = props.get(key)
+                if v and v != parts[-1]:
+                    parts.append(v)
+            display = ", ".join(p for p in parts if p)
+            logger.info("geocode: photon match: %r → %s", query, display)
+            return {
+                'name': display,
+                'lat': coords[1],
+                'lon': coords[0],
+                'source': 'photon',
+                'raw': props,
+            }
+    except Exception as e:
+        logger.debug("geocode: photon lookup failed: %s", e)
+
+    # ── Fallback: address book partial match ──
+    if ab_partial and ab_partial.get('lat') and ab_partial.get('lon'):
+        logger.info("geocode: falling back to address_book partial: %r → %s",
+                    query, ab_partial['name'])
+        return {
+            'name': ab_partial.get('address') or ab_partial['name'],
+            'lat': ab_partial['lat'],
+            'lon': ab_partial['lon'],
+            'source': 'address_book',
+            'raw': ab_partial,
+        }
+
+    logger.info("geocode: no match for %r across all tiers", query)
+    return None
+
+
 def reverse_geocode(lat: float, lon: float) -> str:
     """Reverse geocode coordinates via Photon. Returns formatted address string."""
     try:
