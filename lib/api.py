@@ -24,6 +24,7 @@ from werkzeug.utils import secure_filename
 
 from .utils import get_config, content_hash, clean_filename_to_title, derive_source_and_category, generate_download_url, setup_logging
 from .status import StatusDB
+from .deployment_config import get_deployment_config
 
 logger = setup_logging('recon.api')
 
@@ -1163,6 +1164,15 @@ def api_knowledge_stats():
     if _cache['knowledge_stats'] is None:
         return jsonify({'error': 'Warming up, try again in a few seconds'}), 503
     return jsonify(_cache['knowledge_stats'])
+
+
+@app.route('/api/config')
+def api_config():
+    """Return deployment profile config for frontend consumption."""
+    config = get_deployment_config()
+    resp = jsonify(config)
+    resp.headers['Cache-Control'] = 'public, max-age=300'
+    return resp
 
 
 @app.route('/api/health')

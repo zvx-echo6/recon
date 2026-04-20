@@ -1,0 +1,31 @@
+# Deployment profile: Home (VM 1130)
+# Active on the main Echo6 deployment. Full stack with planet-scale NA tiles.
+# Override via RECON_PROFILE env var in /etc/systemd/system/recon.service
+
+profile: home
+region_name: "North America"
+
+tileset:
+  url: "/tiles/na.pmtiles"
+  bounds: [-168, 14, -52, 72]
+  max_zoom: 15
+  attribution: "Protomaps © OSM"
+
+services:
+  geocode: "/api/geocode"
+  reverse: "/api/reverse"
+  address_book: "/api/address_book"
+  valhalla: "/valhalla"
+
+features:
+  has_nominatim_details: false
+  has_kiwix_wiki: false
+  has_hillshade: false
+  has_3d_terrain: false
+  has_traffic_overlay: false
+  has_landclass: false
+  has_address_book_write: false
+
+defaults:
+  center: [42.5736, -114.6066]
+  zoom: 10
