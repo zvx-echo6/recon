@@ -57,6 +57,16 @@ class _LargeZimRequest(_FlaskRequest):
         return super()._get_file_stream(total_content_length, content_type, filename, content_length)
 
 app.request_class = _LargeZimRequest
+# ── Address Book Blueprint ──
+from .address_book_api import address_book_bp
+app.register_blueprint(address_book_bp)
+
+# ── Netsyms + Geocode Blueprints ──
+from .netsyms_api import netsyms_bp, geocode_bp
+app.register_blueprint(netsyms_bp)
+app.register_blueprint(geocode_bp)
+
+
 
 # ── Navigation Constants ──
 
