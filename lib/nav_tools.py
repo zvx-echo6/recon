@@ -3,6 +3,10 @@
 import re
 import requests
 
+from .utils import setup_logging
+
+logger = setup_logging('recon.nav_tools')
+
 PHOTON_URL = "http://localhost:2322"
 VALHALLA_URL = "http://localhost:8002"
 
@@ -20,11 +24,26 @@ def _parse_coords(text: str):
 
 
 def _geocode(query: str):
-    """Geocode a place name via Photon. Returns (lat, lon, display_name) or raises."""
+    """Geocode a place name via address book then Photon. Returns (lat, lon, display_name) or raises."""
     coords = _parse_coords(query)
     if coords:
         return coords[0], coords[1], query
 
+    # ── Address book lookup (before Photon) ──
+    try:
+        from . import address_book
+        match = address_book.lookup(query)
+        if match and match['confidence'] == 'exact' and match.get('lat') and match.get('lon'):
+            logger.info("Address book exact match: %r → %s (%s, %s)",
+                        query, match['name'], match['lat'], match['lon'])
+            return match['lat'], match['lon'], match.get('address') or match['name']
+        elif match and match['confidence'] == 'partial':
+            logger.info("Address book partial match: %r → %s (falling through to Photon)",
+                        query, match['name'])
+    except Exception as e:
+        logger.debug("Address book lookup failed: %s", e)
+
+    # ── Photon geocoding ──
     try:
         resp = requests.get(
             f"{PHOTON_URL}/api",

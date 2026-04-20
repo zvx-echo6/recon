@@ -44,6 +44,11 @@ app = Flask(__name__,
 
 app.config['MAX_CONTENT_LENGTH'] = None  # ZIM files can be multi-GB
 
+# ── Address Book Blueprint ──
+from .address_book_api import address_book_bp
+app.register_blueprint(address_book_bp)
+
+
 # ── Navigation Constants ──
 
 KNOWLEDGE_SUBNAV = [

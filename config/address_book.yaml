@@ -1,0 +1,18 @@
+# RECON Address Book — saved locations for navigation shortcuts.
+# Entries are matched by name and aliases (case-insensitive).
+# Add new entries by appending to the list below.
+
+entries:
+  - id: home
+    name: Home
+    aliases:
+      - home
+      - matt's house
+      - 214 north st
+      - 214 north street
+    address: "214 North St, Filer, ID 83328"
+    lat: 42.5735833
+    lon: -114.6066389
+    tags:
+      - residence
+      - primary
