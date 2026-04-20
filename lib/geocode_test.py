@@ -20,25 +20,24 @@ TESTS = [
         ),
     },
     {
-        "name": "214 north st filer → photon results (multi-word, not nickname)",
+        "name": "214 north st filer → netsyms exact match (multi-word, not nickname)",
         "query": "214 north st filer",
         "check": lambda r: (
             r["count"] >= 1
-            and r["results"][0]["source"] == "photon"
-            # labeled_as=Home may or may not appear depending on Photon's
-            # geocoding precision — the key invariant is that this multi-word
-            # query flows through Photon, not the address book shortcut.
+            and r["results"][0]["source"] == "netsyms"
+            and r["results"][0]["confidence"] == "exact"
+            and r["results"][0]["type"] == "street_address"
         ),
     },
     {
-        "name": "214 North St, Filer, ID → photon (case/punctuation)",
+        "name": "214 North St, Filer, ID → netsyms (case/punctuation)",
         "query": "214 North St, Filer, ID",
-        "check": lambda r: r["count"] >= 1 and r["results"][0]["source"] == "photon",
+        "check": lambda r: r["count"] >= 1 and r["results"][0]["source"] == "netsyms",
     },
     {
-        "name": "214 NORTH ST FILER ID → photon (uppercase)",
+        "name": "214 NORTH ST FILER ID → netsyms (uppercase)",
         "query": "214 NORTH ST FILER ID",
-        "check": lambda r: r["count"] >= 1 and r["results"][0]["source"] == "photon",
+        "check": lambda r: r["count"] >= 1 and r["results"][0]["source"] == "netsyms",
     },
     {
         "name": "1600 Pennsylvania Ave Washington DC → White House",
