@@ -25,6 +25,7 @@ from werkzeug.utils import secure_filename
 from .utils import get_config, content_hash, clean_filename_to_title, derive_source_and_category, generate_download_url, setup_logging
 from .status import StatusDB
 from .deployment_config import get_deployment_config
+from .place_detail import get_place_detail
 
 logger = setup_logging('recon.api')
 
@@ -1184,6 +1185,13 @@ def api_traffic_flow(z, x, y):
         return r
     except Exception:
         return 'Upstream timeout', 504
+
+
+@app.route('/api/place/<osm_type>/<int:osm_id>')
+def api_place_detail(osm_type, osm_id):
+    """Proxy place details from local Nominatim or Overpass API."""
+    result, status = get_place_detail(osm_type, osm_id)
+    return jsonify(result), status
 
 
 @app.route('/api/config')

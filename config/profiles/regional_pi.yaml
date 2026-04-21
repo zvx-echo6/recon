@@ -20,6 +20,11 @@ traffic:
   provider: "tomtom"
   proxy_url: "/api/traffic/flow/{z}/{x}/{y}.png"
 
+place_details:
+  local_source: "nominatim"
+  local_bbox: [-125.0, 40.0, -104.0, 49.0]
+  fallback_source: "overpass"
+
 services:
   geocode: "/api/geocode"
   reverse: "/api/reverse"
@@ -27,7 +32,7 @@ services:
   valhalla: "/valhalla"
 
 features:
-  has_nominatim_details: false
+  has_nominatim_details: true
   has_kiwix_wiki: false
   has_hillshade: true
   has_3d_terrain: false
