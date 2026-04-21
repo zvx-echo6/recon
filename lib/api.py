@@ -17,7 +17,7 @@ import shutil
 import tempfile
 
 import requests as http_requests
-from flask import Flask, request, jsonify, redirect, render_template
+from flask import Flask, request, jsonify, redirect, render_template, make_response
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 from werkzeug.utils import secure_filename
@@ -1164,6 +1164,26 @@ def api_knowledge_stats():
     if _cache['knowledge_stats'] is None:
         return jsonify({'error': 'Warming up, try again in a few seconds'}), 503
     return jsonify(_cache['knowledge_stats'])
+
+
+
+@app.route('/api/traffic/flow/<int:z>/<int:x>/<int:y>.png')
+def api_traffic_flow(z, x, y):
+    """Proxy TomTom traffic flow tiles to hide API key from frontend."""
+    key = os.environ.get('TOMTOM_API_KEY')
+    if not key:
+        return 'Traffic service not configured', 503
+    url = f'https://api.tomtom.com/traffic/map/4/tile/flow/relative/{z}/{x}/{y}.png?key={key}'
+    try:
+        resp = http_requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return 'Upstream error', 502
+        r = make_response(resp.content)
+        r.headers['Content-Type'] = 'image/png'
+        r.headers['Cache-Control'] = 'public, max-age=120'
+        return r
+    except Exception:
+        return 'Upstream timeout', 504
 
 
 @app.route('/api/config')

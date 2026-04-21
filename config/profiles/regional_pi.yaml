@@ -11,6 +11,15 @@ tileset:
   max_zoom: 15
   attribution: "Protomaps © OSM"
 
+tileset_hillshade:
+  url: "/tiles/hillshade-regional.pmtiles"
+  encoding: "terrarium"
+  max_zoom: 12
+
+traffic:
+  provider: "tomtom"
+  proxy_url: "/api/traffic/flow/{z}/{x}/{y}.png"
+
 services:
   geocode: "/api/geocode"
   reverse: "/api/reverse"
@@ -22,7 +31,7 @@ features:
   has_kiwix_wiki: false
   has_hillshade: true
   has_3d_terrain: false
-  has_traffic_overlay: false
+  has_traffic_overlay: true
   has_landclass: true
   has_address_book_write: true
 

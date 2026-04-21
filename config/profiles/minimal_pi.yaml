@@ -11,6 +11,15 @@ tileset:
   max_zoom: 15
   attribution: "Protomaps © OSM"
 
+tileset_hillshade:
+  url: "/tiles/hillshade-idaho.pmtiles"
+  encoding: "terrarium"
+  max_zoom: 12
+
+traffic:
+  provider: "tomtom"
+  proxy_url: "/api/traffic/flow/{z}/{x}/{y}.png"
+
 services:
   geocode: "/api/geocode"
   reverse: "/api/reverse"
