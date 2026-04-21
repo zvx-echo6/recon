@@ -51,6 +51,8 @@ W_SOURCE_AUTHORITY        =  2.0   # Netsyms for US addresses
 W_LAYER_RANK             =  1.0   # type-appropriate results ranked higher
 W_PHOTON_POSITION_NORM   =  1.0   # Photon's native ranking (normalized by position)
 W_STATE_EXACT            =  1.0   # exact state code match
+W_POI_CLASS_BOOST        =  3.0   # amenity/shop/etc boost for business-name queries
+W_HIGHWAY_CLASS_PENALTY  = -4.0   # highway/route penalty for business-name queries
 
 # ── US abbreviation expansions ──
 # Applied ONLY to parsed StreetName/StreetNamePostType tokens, NOT to ordinals.
@@ -66,6 +68,13 @@ _DIRECTIONAL_ABBREVS = {
 }
 _ORDINAL_RE = re.compile(r'^\d+(st|nd|rd|th)$', re.IGNORECASE)
 
+# ── Road keywords (for detecting when query is about a road vs a business) ──
+_ROAD_KEYWORDS = (
+    set(_STREET_TYPE_ABBREVS.keys())
+    | set(_STREET_TYPE_ABBREVS.values())
+    | {'route', 'rte', 'pass'}
+)
+
 # ── US state codes ──
 _STATE_CODES = {
     'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
@@ -73,6 +82,24 @@ _STATE_CODES = {
     'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
     'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
     'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'DC',
+}
+
+# ── Full state name → code (for intent classifier) ──
+_STATE_NAME_TO_CODE = {
+    'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR',
+    'california': 'CA', 'colorado': 'CO', 'connecticut': 'CT', 'delaware': 'DE',
+    'florida': 'FL', 'georgia': 'GA', 'hawaii': 'HI', 'idaho': 'ID',
+    'illinois': 'IL', 'indiana': 'IN', 'iowa': 'IA', 'kansas': 'KS',
+    'kentucky': 'KY', 'louisiana': 'LA', 'maine': 'ME', 'maryland': 'MD',
+    'massachusetts': 'MA', 'michigan': 'MI', 'minnesota': 'MN',
+    'mississippi': 'MS', 'missouri': 'MO', 'montana': 'MT', 'nebraska': 'NE',
+    'nevada': 'NV', 'new hampshire': 'NH', 'new jersey': 'NJ',
+    'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC',
+    'north dakota': 'ND', 'ohio': 'OH', 'oklahoma': 'OK', 'oregon': 'OR',
+    'pennsylvania': 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+    'south dakota': 'SD', 'tennessee': 'TN', 'texas': 'TX', 'utah': 'UT',
+    'vermont': 'VT', 'virginia': 'VA', 'washington': 'WA',
+    'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY',
 }
 
 # Coordinate regex
@@ -208,12 +235,26 @@ def _classify_and_parse(query):
     elif zipcode and not number and not street_name:
         return 'POSTCODE', parsed
     elif addr_type == 'Ambiguous':
-        # Check if it looks like a locality: 2 tokens, second is a state code
+        # Check if it looks like a locality: last token(s) are a state code or name
         tokens = q.replace(',', ' ').split()
-        if len(tokens) >= 2 and tokens[-1].upper() in _STATE_CODES:
-            parsed['city'] = ' '.join(tokens[:-1])
-            parsed['state'] = tokens[-1].upper()
-            return 'LOCALITY', parsed
+        if len(tokens) >= 2:
+            last_upper = tokens[-1].upper()
+            if last_upper in _STATE_CODES:
+                parsed['city'] = ' '.join(tokens[:-1])
+                parsed['state'] = last_upper
+                return 'LOCALITY', parsed
+            # Check full state names (single-word like "idaho" or two-word like "new york")
+            last_lower = tokens[-1].lower()
+            if last_lower in _STATE_NAME_TO_CODE:
+                parsed['city'] = ' '.join(tokens[:-1])
+                parsed['state'] = _STATE_NAME_TO_CODE[last_lower]
+                return 'LOCALITY', parsed
+            if len(tokens) >= 3:
+                two_word = f"{tokens[-2].lower()} {last_lower}"
+                if two_word in _STATE_NAME_TO_CODE:
+                    parsed['city'] = ' '.join(tokens[:-2])
+                    parsed['state'] = _STATE_NAME_TO_CODE[two_word]
+                    return 'LOCALITY', parsed
         return 'UNKNOWN', parsed
     else:
         return 'UNKNOWN', parsed
@@ -363,7 +404,8 @@ def _parse_photon_features(features, source):
             '_photon_rank': i,
             '_number': props.get('housenumber', ''),
             '_street': props.get('street', ''),
-            '_city': props.get('city', ''),
+            # For locality results, the name IS the city (Photon omits 'city' on city-type features)
+            '_city': props.get('city', '') or (props.get('name', '') if rtype == 'locality' else ''),
             '_state': props.get('state', ''),
         })
     return results
@@ -476,6 +518,21 @@ def _score_candidate(candidate, parsed, intent):
         signals['photon_position'] = round(score, 2)
         total += score
 
+    # ── Business intent POI boost ──
+    # When the query has no road keywords (likely a business/POI search),
+    # boost amenity/shop/etc results and penalize highway/route results.
+    # Skipped for LOCALITY, POSTCODE, COORD queries where class is irrelevant.
+    if intent not in ('LOCALITY', 'POSTCODE', 'COORD'):
+        q_tokens_lower = set(parsed.get('raw_query', '').lower().replace(',', ' ').split())
+        if not (q_tokens_lower & _ROAD_KEYWORDS):
+            osm_key = (candidate.get('raw') or {}).get('osm_key', '')
+            if osm_key in ('amenity', 'shop', 'tourism', 'leisure', 'office', 'craft'):
+                signals['poi_class_boost'] = W_POI_CLASS_BOOST
+                total += W_POI_CLASS_BOOST
+            elif osm_key in ('highway', 'route'):
+                signals['highway_class_penalty'] = W_HIGHWAY_CLASS_PENALTY
+                total += W_HIGHWAY_CLASS_PENALTY
+
     return round(total, 2), signals
 
 
@@ -526,10 +583,13 @@ def _rerank(candidates, parsed, intent, query, limit):
 
     # Trace log for audit
     _trace_logger.debug("─── Query: %r  intent=%s ───", query, intent)
-    for i, c in enumerate(scored[:3]):
+    for i, c in enumerate(scored):
+        osm_key = (c.get('raw') or {}).get('osm_key', '—')
+        osm_val = (c.get('raw') or {}).get('osm_value', '—')
         _trace_logger.debug(
-            "  #%d score=%.2f src=%s name=%s",
-            i, c['_score'], c.get('source', '?'), c.get('name', '?')[:60]
+            "  #%d score=%.2f src=%s key=%s/%s name=%s",
+            i, c['_score'], c.get('source', '?'), osm_key, osm_val,
+            c.get('name', '?')[:60]
         )
         _trace_logger.debug("      signals=%s", c.get('_signals', {}))
 
