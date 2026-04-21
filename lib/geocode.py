@@ -325,12 +325,12 @@ def _parse_photon_features(features, source):
         feat_type = props.get('type', '')
         has_hn = bool(props.get('housenumber'))
 
-        if has_hn or osm_value in ('house', 'residential'):
+        if osm_key in ('amenity', 'shop', 'tourism', 'leisure', 'office'):
+            rtype = 'poi'
+        elif has_hn or osm_value in ('house', 'residential'):
             rtype = 'street_address'
         elif feat_type in ('city', 'town', 'village', 'hamlet', 'county', 'state', 'country'):
             rtype = 'locality'
-        elif osm_key in ('amenity', 'shop', 'tourism', 'leisure'):
-            rtype = 'poi'
         else:
             rtype = 'poi'
 
