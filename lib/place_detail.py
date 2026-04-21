@@ -1,5 +1,6 @@
 """
 Place detail proxy — local Nominatim first, Overpass API fallback, SQLite cache.
+Overture Maps enrichment layer fills sparse extratags (phone, website, brand).
 
 Provides get_place_detail(osm_type, osm_id) which returns a cleaned dict
 matching the response shape for /api/place/<osm_type>/<osm_id>.
@@ -80,6 +81,77 @@ def cache_put(osm_type, osm_id, data, source):
         (osm_type, osm_id, json.dumps(data), source, int(time.time()))
     )
     db.commit()
+
+
+# ── Overture enrichment ─────────────────────────────────────────────────
+
+def _enrich_with_overture(result, osm_type, osm_id):
+    """
+    Attempt to enrich a place result with Overture Maps data.
+    Fills sparse extratags (phone, website, brand) without overwriting existing values.
+    Returns the (possibly enriched) result dict.
+    """
+    try:
+        from .deployment_config import get_deployment_config
+        deploy_config = get_deployment_config()
+        features = deploy_config.get('features', {})
+        if not features.get('has_overture_enrichment', False):
+            return result
+    except Exception:
+        return result
+
+    try:
+        from .overture import find_by_osm_id, find_by_coords_and_name
+    except ImportError:
+        logger.debug("Overture module not available")
+        return result
+
+    enrichment = None
+    match_method = None
+
+    # Strategy 1: OSM cross-reference (exact)
+    enrichment = find_by_osm_id(osm_type, osm_id)
+    if enrichment:
+        match_method = 'osm_xref'
+
+    # Strategy 2: Coordinate + name fuzzy (fallback)
+    if not enrichment and result.get('centroid') and result.get('name'):
+        centroid = result['centroid']
+        if centroid.get('lat') and centroid.get('lon'):
+            enrichment = find_by_coords_and_name(
+                centroid['lat'], centroid['lon'], result['name']
+            )
+            if enrichment:
+                match_method = 'coord_name_fuzzy'
+
+    if not enrichment:
+        return result
+
+    # Fill sparse extratags (never overwrite existing non-null values)
+    extratags = result.get('extratags', {})
+    fill_map = [
+        ('phone', 'phone'),
+        ('website', 'website'),
+        ('brand', 'brand_name'),
+        ('brand:wikidata', 'brand_wikidata'),
+    ]
+    for osm_key, overture_key in fill_map:
+        if not extratags.get(osm_key) and enrichment.get(overture_key):
+            extratags[osm_key] = enrichment[overture_key]
+    result['extratags'] = extratags
+
+    # Add source metadata
+    result['sources'] = {
+        'primary': result.get('source', 'unknown'),
+        'enrichment': 'overture',
+        'overture_match_method': match_method,
+        'overture_gers_id': enrichment.get('gers_id'),
+        'overture_confidence': enrichment.get('confidence'),
+        'overture_basic_category': enrichment.get('basic_category'),
+    }
+
+    logger.debug(f"Overture enrichment for {osm_type}/{osm_id}: {match_method}")
+    return result
 
 
 # ── Nominatim parsing ───────────────────────────────────────────────────
@@ -368,6 +440,7 @@ def get_place_detail(osm_type, osm_id):
         logger.warning(f"Nominatim error for {osm_type}/{osm_id}: {e}")
 
     if nominatim_result:
+        nominatim_result = _enrich_with_overture(nominatim_result, osm_type, osm_id)
         cache_put(osm_type, osm_id, nominatim_result, 'nominatim_local')
         return nominatim_result, 200
 
@@ -398,6 +471,7 @@ def get_place_detail(osm_type, osm_id):
         logger.warning(f"Overpass error for {osm_type}/{osm_id}: {e}")
 
     if overpass_result:
+        overpass_result = _enrich_with_overture(overpass_result, osm_type, osm_id)
         cache_put(osm_type, osm_id, overpass_result, 'overpass')
         return overpass_result, 200
 

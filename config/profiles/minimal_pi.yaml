@@ -34,6 +34,7 @@ features:
   has_traffic_overlay: false
   has_landclass: false
   has_address_book_write: true
+  has_overture_enrichment: false
 
 defaults:
   center: [44.0, -114.0]
