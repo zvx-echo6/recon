@@ -178,6 +178,25 @@ class ContactsDB:
         conn.commit()
         return self.get(user_id, contact_id), None
 
+    def restore_as(self, user_id, contact_id, new_label):
+        """Restore a soft-deleted contact with a new label (for Home/Work conflict resolution)."""
+        conn = self._get_conn()
+        row = self.get(user_id, contact_id, include_deleted=True)
+        if not row or not row.get('deleted_at'):
+            return None, 'not_found'
+        if not new_label or not new_label.strip():
+            return None, 'invalid_label'
+        now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
+        try:
+            conn.execute(
+                "UPDATE contacts SET deleted_at = NULL, deleted_by = NULL, label = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (new_label.strip(), now, contact_id, user_id)
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            return None, 'conflict'
+        return self.get(user_id, contact_id), None
+
     def purge(self, user_id, contact_id):
         conn = self._get_conn()
         row = self.get(user_id, contact_id, include_deleted=True)

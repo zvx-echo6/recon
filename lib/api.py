@@ -82,7 +82,6 @@ KNOWLEDGE_SUBNAV = [
     {'href': '/upload', 'label': 'Upload'},
     {'href': '/web-ingest', 'label': 'Web Ingest'},
     {'href': '/failures', 'label': 'Failures'},
-    {'href': '/deleted-contacts', 'label': 'Deleted Contacts'},
 ]
 
 PEERTUBE_SUBNAV = [
@@ -100,6 +99,12 @@ SETTINGS_SUBNAV = [
     {'href': '/settings/cookies', 'label': 'YouTube Cookies'},
     {'href': '/settings/vpn', 'label': 'NordVPN'},
     {'href': '/settings/health', 'label': 'Service Health'},
+]
+
+NAVI_SUBNAV = [
+    {'href': '/nav-i', 'label': 'Overview'},
+    {'href': '/deleted-contacts', 'label': 'Deleted Contacts'},
+    {'href': '/nav-i/api-keys', 'label': 'API Keys'},
 ]
 
 
@@ -335,9 +340,27 @@ def deleted_contacts_page():
     user_id = get_user_id() or "anonymous"
     db = ContactsDB()
     contacts = db.list_deleted(user_id)
-    return render_template("knowledge/deleted_contacts.html",
-                           domain="knowledge", subnav=KNOWLEDGE_SUBNAV, active_page="/deleted-contacts",
+    return render_template("navi/deleted_contacts.html",
+                           domain="navi", subnav=NAVI_SUBNAV, active_page="/deleted-contacts",
                            contacts=contacts)
+
+
+@app.route("/nav-i")
+def navi_landing_page():
+    from .auth import get_user_id
+    from .contacts import ContactsDB
+    user_id = get_user_id() or "anonymous"
+    db = ContactsDB()
+    deleted_count = len(db.list_deleted(user_id))
+    return render_template("navi/landing.html",
+                           domain="navi", subnav=NAVI_SUBNAV, active_page="/nav-i",
+                           deleted_count=deleted_count)
+
+
+@app.route("/nav-i/api-keys")
+def navi_api_keys_page():
+    return render_template("navi/api_keys.html",
+                           domain="navi", subnav=NAVI_SUBNAV, active_page="/nav-i/api-keys")
 
 
 @app.route('/peertube')

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 style="color:var(--green);margin-bottom:16px;">Nav-I</h3>
+<p class="text-dim" style="margin-bottom:24px;">Navi frontend management — contacts, API keys, and configuration.</p>
+
+<div class="stat-grid">
+    <a href="/deleted-contacts" style="text-decoration:none;">
+        <div class="stat-card" style="cursor:pointer;transition:border-color 0.15s;">
+            <div class="label">Deleted Contacts</div>
+            <div class="value">{{ deleted_count }}</div>
+            <div class="sublabel">awaiting restore or purge</div>
+        </div>
+    </a>
+    <a href="/nav-i/api-keys" style="text-decoration:none;">
+        <div class="stat-card" style="cursor:pointer;transition:border-color 0.15s;">
+            <div class="label">API Keys</div>
+            <div class="value" style="font-size:14px;color:var(--text-dim);margin-top:12px;">Coming soon</div>
+            <div class="sublabel">per-user key management</div>
+        </div>
+    </a>
+</div>
+{% endblock %}

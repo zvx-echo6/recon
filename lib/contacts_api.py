@@ -102,6 +102,24 @@ def restore_contact(contact_id):
     return jsonify(contact)
 
 
+@contacts_bp.route('/api/contacts/<int:contact_id>/restore-as', methods=['POST'])
+@require_auth
+def restore_as_contact(contact_id):
+    db = _get_db()
+    data = request.get_json(force=True)
+    new_label = data.get('label', '').strip()
+    if not new_label:
+        return jsonify({'error': 'label is required'}), 400
+    contact, err = db.restore_as(request.user_id, contact_id, new_label)
+    if err == 'not_found':
+        return jsonify({'error': 'Not found'}), 404
+    if err == 'invalid_label':
+        return jsonify({'error': 'Invalid label'}), 400
+    if err == 'conflict':
+        return jsonify({'error': 'Label conflict'}), 409
+    return jsonify(contact)
+
+
 @contacts_bp.route('/api/contacts/<int:contact_id>/purge', methods=['DELETE'])
 @require_auth
 def purge_contact(contact_id):

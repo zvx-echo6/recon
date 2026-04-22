@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 style="color:var(--orange);margin-bottom:16px;">Deleted Contacts</h3>
+{% if not contacts %}
+<p class="text-dim">No deleted contacts.</p>
+{% else %}
+<table>
+    <tr><th>Label</th><th>Name</th><th>Category</th><th>Phone</th><th>Deleted At</th><th>Actions</th></tr>
+    {% for c in contacts %}
+    <tr id="row-{{ c.id }}">
+        <td>{{ c.label }}</td>
+        <td>{{ c.name or '' }}</td>
+        <td class="text-dim">{{ c.category or '' }}</td>
+        <td class="text-dim text-xs">{{ c.phone or '' }}</td>
+        <td class="text-dim text-xs">{{ c.deleted_at or '' }}</td>
+        <td>
+            <button class="btn" onclick="restoreContact({{ c.id }}, '{{ c.label }}')">Restore</button>
+            <button class="btn" style="margin-left:4px;color:#ff4444;" onclick="purgeContact({{ c.id }})">Purge</button>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+{% endif %}
+
+<!-- Conflict resolution modal -->
+<div id="conflict-modal" style="display:none;position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
+    <div style="background:var(--bg-secondary);border:1px solid var(--border-light);padding:24px;max-width:400px;width:90%;">
+        <h4 style="color:var(--orange);margin-bottom:12px;">Label Conflict</h4>
+        <p class="text-dim" style="margin-bottom:16px;">An active contact with the label "<span id="conflict-label" style="color:var(--text-primary);"></span>" already exists. Choose a new label to restore this contact:</p>
+        <input id="conflict-new-label" type="text" placeholder="New label..." style="width:100%;padding:6px 10px;background:var(--bg-tertiary);border:1px solid var(--border-light);color:var(--text-primary);font-family:var(--font-mono);font-size:13px;margin-bottom:16px;">
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn" onclick="closeConflictModal()">Cancel</button>
+            <button class="btn" id="conflict-submit" onclick="submitRestoreAs()" style="border-color:var(--green);color:var(--green);">Restore As</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+var pendingRestoreId = null;
+
+async function restoreContact(id, label) {
+    try {
+        var resp = await fetch('/api/contacts/' + id + '/restore', {method: 'POST'});
+        if (resp.ok) {
+            location.reload();
+        } else if (resp.status === 409) {
+            // Home/Work conflict — show modal
+            pendingRestoreId = id;
+            document.getElementById('conflict-label').textContent = label;
+            document.getElementById('conflict-new-label').value = '';
+            var modal = document.getElementById('conflict-modal');
+            modal.style.display = 'flex';
+            document.getElementById('conflict-new-label').focus();
+        } else {
+            var data = await resp.json();
+            alert(data.error || 'Restore failed');
+        }
+    } catch(e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+function closeConflictModal() {
+    document.getElementById('conflict-modal').style.display = 'none';
+    pendingRestoreId = null;
+}
+
+async function submitRestoreAs() {
+    var newLabel = document.getElementById('conflict-new-label').value.trim();
+    if (!newLabel) {
+        document.getElementById('conflict-new-label').style.borderColor = 'var(--red)';
+        return;
+    }
+    try {
+        var resp = await fetch('/api/contacts/' + pendingRestoreId + '/restore-as', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({label: newLabel})
+        });
+        if (resp.ok) {
+            location.reload();
+        } else {
+            var data = await resp.json();
+            alert(data.error || 'Restore failed');
+        }
+    } catch(e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function purgeContact(id) {
+    if (!confirm('Permanently delete this contact? This cannot be undone.')) return;
+    try {
+        var resp = await fetch('/api/contacts/' + id + '/purge', {method: 'DELETE'});
+        if (resp.ok) {
+            location.reload();
+        } else {
+            var data = await resp.json();
+            alert(data.error || 'Purge failed');
+        }
+    } catch(e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeConflictModal();
+});
+// Close modal on backdrop click
+document.getElementById('conflict-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeConflictModal();
+});
+</script>
+{% endblock %}
