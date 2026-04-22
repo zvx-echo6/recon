@@ -73,13 +73,17 @@ def cache_get(osm_type, osm_id):
 
 
 def cache_put(osm_type, osm_id, data, source):
-    """Store a place detail result in the cache."""
+    """Store a place detail result in the cache (preserves google columns)."""
     db = _get_db()
-    db.execute(
-        "INSERT OR REPLACE INTO place_cache (osm_type, osm_id, data, source, cached_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (osm_type, osm_id, json.dumps(data), source, int(time.time()))
-    )
+    now = int(time.time())
+    db.execute("""
+        INSERT INTO place_cache (osm_type, osm_id, data, source, cached_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(osm_type, osm_id) DO UPDATE SET
+            data = excluded.data,
+            source = excluded.source,
+            cached_at = excluded.cached_at
+    """, (osm_type, osm_id, json.dumps(data), source, now))
     db.commit()
 
 
@@ -152,6 +156,120 @@ def _enrich_with_overture(result, osm_type, osm_id):
 
     logger.debug(f"Overture enrichment for {osm_type}/{osm_id}: {match_method}")
     return result
+
+
+
+# ── Google Places enrichment (tertiary, gap-fill only) ──────────────
+
+# Business POI classes eligible for Google enrichment
+_BUSINESS_CLASSES = {'amenity', 'shop', 'tourism', 'leisure', 'office', 'craft'}
+
+# Fields Google can fill
+_GOOGLE_GAP_FIELDS = ('opening_hours', 'phone', 'website')
+
+
+def _enrich_with_google(result, osm_type, osm_id):
+    """
+    Tertiary enrichment via Google Places (New) API.
+    Only fires for business-type POIs when opening_hours, phone, or website
+    are still missing after OSM + Overture enrichment.
+    Fills only empty fields — never overwrites existing values.
+    """
+    # Check feature flag
+    try:
+        from .deployment_config import get_deployment_config
+        deploy_config = get_deployment_config()
+        features = deploy_config.get('features', {})
+        if not features.get('has_google_places_enrichment', False):
+            return result
+    except Exception:
+        return result
+
+    # Only enrich business-type POIs
+    poi_class = result.get('class', '')
+    if poi_class not in _BUSINESS_CLASSES:
+        return result
+
+    # Check if any gap fields are missing
+    extratags = result.get('extratags', {})
+    gaps = [f for f in _GOOGLE_GAP_FIELDS if not extratags.get(f)]
+    if not gaps:
+        logger.debug(f"google_places: skip {osm_type}/{osm_id} — no gaps")
+        return result
+
+    try:
+        from . import google_places
+    except ImportError:
+        logger.debug("google_places module not available")
+        return result
+
+    # Check Google cache first
+    cached_pid, cached_data = google_places.cache_get_google(osm_type, osm_id)
+    if cached_pid and cached_data:
+        _apply_google_data(result, cached_data, gaps)
+        result.setdefault('sources', {})['google_places'] = {
+            'place_id': cached_pid,
+            'source': 'cache',
+        }
+        logger.debug(f"google_places: cache hit for {osm_type}/{osm_id}")
+        return result
+
+    # Skip if already looked up and found nothing (cached_pid is None)
+    if cached_pid is not None:
+        return result
+
+    # Daily cap check
+    if not google_places.check_daily_cap():
+        return result
+
+    # Search for the place
+    name = result.get('name', '')
+    centroid = result.get('centroid', {})
+    lat = centroid.get('lat')
+    lon = centroid.get('lon')
+    if not name or not lat or not lon:
+        return result
+
+    place_id = google_places.search_place(name, lat, lon)
+    if not place_id:
+        # Cache the miss to avoid repeated lookups
+        google_places.cache_put_google(osm_type, osm_id, '__miss__', None)
+        return result
+
+    # Get details
+    details = google_places.get_place_details(place_id)
+    if not details:
+        google_places.cache_put_google(osm_type, osm_id, place_id, None)
+        return result
+
+    # Cache the result
+    google_places.cache_put_google(osm_type, osm_id, place_id, details)
+
+    # Apply to result
+    _apply_google_data(result, details, gaps)
+    result.setdefault('sources', {})['google_places'] = {
+        'place_id': place_id,
+        'source': 'api',
+        'daily_count': google_places.get_daily_count(),
+    }
+
+    return result
+
+
+def _apply_google_data(result, google_data, gaps):
+    """Apply Google Places data to fill gap fields only."""
+    extratags = result.get('extratags', {})
+    if 'opening_hours' in gaps:
+        osm_hours = google_data.get('opening_hours')
+        if osm_hours:
+            extratags['opening_hours'] = osm_hours
+        elif google_data.get('opening_hours_raw'):
+            extratags['opening_hours_raw'] = google_data['opening_hours_raw']
+    if 'phone' in gaps and google_data.get('phone_number'):
+        extratags['phone'] = google_data['phone_number']
+    if 'website' in gaps and google_data.get('website'):
+        extratags['website'] = google_data['website']
+    result['extratags'] = extratags
 
 
 # ── Nominatim parsing ───────────────────────────────────────────────────
@@ -441,6 +559,7 @@ def get_place_detail(osm_type, osm_id):
 
     if nominatim_result:
         nominatim_result = _enrich_with_overture(nominatim_result, osm_type, osm_id)
+        nominatim_result = _enrich_with_google(nominatim_result, osm_type, osm_id)
         cache_put(osm_type, osm_id, nominatim_result, 'nominatim_local')
         return nominatim_result, 200
 
@@ -472,6 +591,7 @@ def get_place_detail(osm_type, osm_id):
 
     if overpass_result:
         overpass_result = _enrich_with_overture(overpass_result, osm_type, osm_id)
+        overpass_result = _enrich_with_google(overpass_result, osm_type, osm_id)
         cache_put(osm_type, osm_id, overpass_result, 'overpass')
         return overpass_result, 200
 

@@ -22,7 +22,7 @@ traffic:
 
 place_details:
   local_source: "nominatim"
-  local_bbox: [-117.2, 41.98, -111.04, 49.0]
+  local_bbox: [-125.0, 31.3, -104.0, 49.0]
   fallback_source: "overpass"
 
 services:
@@ -40,6 +40,7 @@ features:
   has_landclass: false
   has_address_book_write: false
   has_overture_enrichment: true
+  has_google_places_enrichment: true
 
 defaults:
   center: [42.5736, -114.6066]
