@@ -26,6 +26,7 @@ from .utils import get_config, content_hash, clean_filename_to_title, derive_sou
 from .status import StatusDB
 from .deployment_config import get_deployment_config
 from .place_detail import get_place_detail
+from .landclass import lookup_landclass, format_summary
 
 logger = setup_logging('recon.api')
 
@@ -1232,6 +1233,39 @@ def api_place_detail(osm_type, osm_id):
     """Proxy place details from local Nominatim or Overpass API."""
     result, status = get_place_detail(osm_type, osm_id)
     return jsonify(result), status
+
+
+
+@app.route('/api/landclass')
+def api_landclass():
+    """PAD-US land classification lookup for a point."""
+    config = get_deployment_config()
+    if not config.get('features', {}).get('has_landclass'):
+        return jsonify({'error': 'Land classification not available'}), 404
+
+    try:
+        lat = float(request.args.get('lat', ''))
+        lon = float(request.args.get('lon', ''))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'lat and lon required as numbers'}), 400
+
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return jsonify({'error': 'lat must be -90..90, lon must be -180..180'}), 400
+
+    classifications = lookup_landclass(lat, lon)
+    is_public = len(classifications) > 0
+    is_private = len(classifications) == 0
+    summary = format_summary(classifications)
+
+    return jsonify({
+        'lat': lat,
+        'lon': lon,
+        'classifications': classifications,
+        'count': len(classifications),
+        'is_public': is_public,
+        'is_private': is_private,
+        'summary': summary,
+    })
 
 
 @app.route('/api/config')

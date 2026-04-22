@@ -37,7 +37,7 @@ features:
   has_hillshade: true
   has_3d_terrain: false
   has_traffic_overlay: true
-  has_landclass: false
+  has_landclass: true
   has_address_book_write: false
   has_overture_enrichment: true
   has_google_places_enrichment: true
