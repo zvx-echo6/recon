@@ -41,6 +41,7 @@ features:
   has_address_book_write: false
   has_overture_enrichment: true
   has_google_places_enrichment: true
+  has_contacts: true
 
 defaults:
   center: [42.5736, -114.6066]

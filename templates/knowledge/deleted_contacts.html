@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 style="color:#ffa500;margin-bottom:16px;">Deleted Contacts</h3>
+{% if not contacts %}
+<p class="text-dim">No deleted contacts.</p>
+{% else %}
+<table>
+    <tr><th>Label</th><th>Name</th><th>Category</th><th>Phone</th><th>Deleted At</th><th>Actions</th></tr>
+    {% for c in contacts %}
+    <tr id="row-{{ c.id }}">
+        <td>{{ c.label }}</td>
+        <td>{{ c.name or '' }}</td>
+        <td class="text-dim">{{ c.category or '' }}</td>
+        <td class="text-dim text-xs">{{ c.phone or '' }}</td>
+        <td class="text-dim text-xs">{{ c.deleted_at or '' }}</td>
+        <td>
+            <button class="btn" onclick="restoreContact({{ c.id }})">Restore</button>
+            <button class="btn" style="margin-left:4px;color:#ff4444;" onclick="purgeContact({{ c.id }})">Purge</button>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+async function restoreContact(id) {
+    try {
+        var resp = await fetch('/api/contacts/' + id + '/restore', {method: 'POST'});
+        if (resp.ok) {
+            location.reload();
+        } else {
+            var data = await resp.json();
+            alert(data.error || 'Restore failed');
+        }
+    } catch(e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function purgeContact(id) {
+    if (!confirm('Permanently delete this contact? This cannot be undone.')) return;
+    try {
+        var resp = await fetch('/api/contacts/' + id + '/purge', {method: 'DELETE'});
+        if (resp.ok) {
+            location.reload();
+        } else {
+            var data = await resp.json();
+            alert(data.error || 'Purge failed');
+        }
+    } catch(e) {
+        alert('Error: ' + e.message);
+    }
+}
+</script>
+{% endblock %}
