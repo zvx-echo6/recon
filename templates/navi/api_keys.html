@@ -1,8 +1,269 @@
 {% extends "base.html" %}
 {% block content %}
 <h3 style="color:var(--orange);margin-bottom:16px;">API Keys</h3>
-<div class="panel">
-    <p class="text-dim">Per-user API key management is coming soon.</p>
-    <p class="text-dim" style="margin-top:8px;font-size:11px;">This will allow generating keys for programmatic access to the Navi contacts API.</p>
+
+<div class="panel" style="margin-bottom:16px;padding:10px 14px;border-left:3px solid var(--orange);">
+    <p class="text-dim" style="font-size:12px;margin:0;">Updating keys does not restart RECON. After updates, click <strong style="color:var(--text-primary);">Restart RECON</strong> below or restart manually from terminal.</p>
 </div>
+
+<div id="keys-loading" class="text-dim" style="padding:20px;">Loading keys...</div>
+<div id="keys-error" style="display:none;padding:12px;color:#ff4444;"></div>
+
+<table id="keys-table" style="display:none;">
+    <thead>
+        <tr><th>Provider</th><th>Masked Value</th><th>Count</th><th>Last Modified</th><th style="width:200px;">Actions</th></tr>
+    </thead>
+    <tbody id="keys-tbody"></tbody>
+</table>
+
+<div id="gemini-detail" style="display:none;margin-top:16px;">
+    <h4 style="color:var(--text-primary);margin-bottom:8px;font-size:13px;">Gemini Keys</h4>
+    <table style="font-size:12px;">
+        <thead>
+            <tr><th>#</th><th>Masked Key</th><th>Calls</th><th>Errors</th><th>Last Used</th><th style="width:200px;">Actions</th></tr>
+        </thead>
+        <tbody id="gemini-tbody"></tbody>
+    </table>
+</div>
+
+<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border-light);">
+    <button class="btn" onclick="restartRecon(this)" style="border-color:var(--orange);color:var(--orange);">Restart RECON</button>
+    <span id="restart-status" class="text-dim text-xs" style="margin-left:8px;"></span>
+</div>
+
+<!-- Update modal -->
+<div id="update-modal" style="display:none;position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
+    <div style="background:var(--bg-secondary);border:1px solid var(--border-light);padding:24px;max-width:440px;width:90%;">
+        <h4 style="color:var(--orange);margin-bottom:12px;">Update Key</h4>
+        <p class="text-dim" style="margin-bottom:4px;font-size:12px;">Provider: <span id="modal-provider" style="color:var(--text-primary);"></span></p>
+        <p class="text-dim" style="margin-bottom:12px;font-size:12px;">Key: <span id="modal-key-name" style="color:var(--text-primary);font-family:var(--font-mono);"></span></p>
+        <div style="position:relative;">
+            <input id="modal-new-value" type="password" placeholder="Paste new key value..." autocomplete="off" style="width:100%;padding:6px 36px 6px 10px;background:var(--bg-tertiary);border:1px solid var(--border-light);color:var(--text-primary);font-family:var(--font-mono);font-size:13px;">
+            <button onclick="toggleKeyVisibility()" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;padding:4px;" title="Toggle visibility" id="modal-toggle-vis">show</button>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+            <button class="btn" onclick="closeUpdateModal()">Cancel</button>
+            <button class="btn" id="modal-save" onclick="saveKey()" style="border-color:var(--green);color:var(--green);">Save</button>
+        </div>
+        <p id="modal-error" style="display:none;color:#ff4444;font-size:12px;margin-top:8px;"></p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var pendingUpdate = null; // {name, index, provider}
+
+async function loadKeys() {
+    try {
+        var resp = await fetch('/api/nav-i/api-keys/list');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        renderKeys(data.keys);
+    } catch(e) {
+        document.getElementById('keys-loading').style.display = 'none';
+        var errEl = document.getElementById('keys-error');
+        errEl.textContent = 'Failed to load keys: ' + e.message;
+        errEl.style.display = 'block';
+    }
+}
+
+function renderKeys(keys) {
+    document.getElementById('keys-loading').style.display = 'none';
+    document.getElementById('keys-table').style.display = '';
+
+    var tbody = document.getElementById('keys-tbody');
+    tbody.innerHTML = '';
+
+    keys.forEach(function(k) {
+        var tr = document.createElement('tr');
+        tr.id = 'row-' + k.name;
+
+        var masked = k.masked_value || '<span class="text-dim">not set</span>';
+        var countStr = k.count.toString();
+        var mtime = k.last_modified ? k.last_modified.replace('T', ' ').replace('Z', '') : '—';
+
+        tr.innerHTML =
+            '<td style="font-weight:600;">' + k.display_name + '</td>' +
+            '<td><code style="font-size:12px;">' + masked + '</code></td>' +
+            '<td style="text-align:center;">' + countStr + '</td>' +
+            '<td class="text-dim text-xs">' + mtime + '</td>' +
+            '<td>' +
+                (k.provider === 'gemini'
+                    ? '<button class="btn" onclick="toggleGeminiDetail()">Details</button> '
+                    : '<button class="btn" onclick="openUpdateModal(\'' + k.name + '\', null, \'' + k.display_name + '\')">Update</button> ') +
+                '<button class="btn" onclick="testKey(\'' + k.name + '\', null, this)">Test</button>' +
+                '<span class="test-result text-xs" style="margin-left:6px;"></span>' +
+            '</td>';
+        tbody.appendChild(tr);
+
+        // Render Gemini sub-table
+        if (k.provider === 'gemini' && k.keys) {
+            renderGeminiKeys(k.keys);
+        }
+    });
+}
+
+function renderGeminiKeys(keys) {
+    var tbody = document.getElementById('gemini-tbody');
+    tbody.innerHTML = '';
+
+    keys.forEach(function(k) {
+        var tr = document.createElement('tr');
+        var lastUsed = k.last_used ? k.last_used.replace('T', ' ').replace('Z', '') : '—';
+        tr.innerHTML =
+            '<td>' + k.index + '</td>' +
+            '<td><code style="font-size:11px;">' + k.masked + '</code></td>' +
+            '<td style="text-align:center;">' + k.calls + '</td>' +
+            '<td style="text-align:center;">' + (k.errors || 0) + '</td>' +
+            '<td class="text-dim text-xs">' + lastUsed + '</td>' +
+            '<td>' +
+                '<button class="btn" onclick="openUpdateModal(\'GEMINI_KEY\', ' + k.index + ', \'Gemini #' + k.index + '\')">Update</button> ' +
+                '<button class="btn" onclick="testKey(\'GEMINI_KEY\', ' + k.index + ', this)">Test</button>' +
+                '<span class="test-result text-xs" style="margin-left:6px;"></span>' +
+            '</td>';
+        tbody.appendChild(tr);
+    });
+}
+
+function toggleGeminiDetail() {
+    var el = document.getElementById('gemini-detail');
+    el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+function openUpdateModal(name, index, displayName) {
+    pendingUpdate = {name: name, index: index};
+    document.getElementById('modal-provider').textContent = displayName;
+    document.getElementById('modal-key-name').textContent = name + (index !== null ? ' [' + index + ']' : '');
+    document.getElementById('modal-new-value').value = '';
+    document.getElementById('modal-new-value').type = 'password';
+    document.getElementById('modal-toggle-vis').textContent = 'show';
+    document.getElementById('modal-error').style.display = 'none';
+    document.getElementById('update-modal').style.display = 'flex';
+    document.getElementById('modal-new-value').focus();
+}
+
+function closeUpdateModal() {
+    document.getElementById('update-modal').style.display = 'none';
+    pendingUpdate = null;
+}
+
+function toggleKeyVisibility() {
+    var inp = document.getElementById('modal-new-value');
+    var btn = document.getElementById('modal-toggle-vis');
+    if (inp.type === 'password') {
+        inp.type = 'text';
+        btn.textContent = 'hide';
+    } else {
+        inp.type = 'password';
+        btn.textContent = 'show';
+    }
+}
+
+async function saveKey() {
+    if (!pendingUpdate) return;
+    var newValue = document.getElementById('modal-new-value').value.trim();
+    if (!newValue) {
+        var errEl = document.getElementById('modal-error');
+        errEl.textContent = 'Key value cannot be empty.';
+        errEl.style.display = 'block';
+        return;
+    }
+
+    var saveBtn = document.getElementById('modal-save');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+
+    try {
+        var body = {name: pendingUpdate.name, new_value: newValue};
+        if (pendingUpdate.index !== null) body.index = pendingUpdate.index;
+
+        var resp = await fetch('/api/nav-i/api-keys/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        var data = await resp.json();
+        if (data.success) {
+            closeUpdateModal();
+            loadKeys(); // refresh table
+        } else {
+            var errEl = document.getElementById('modal-error');
+            errEl.textContent = data.error || 'Update failed';
+            errEl.style.display = 'block';
+        }
+    } catch(e) {
+        var errEl = document.getElementById('modal-error');
+        errEl.textContent = 'Error: ' + e.message;
+        errEl.style.display = 'block';
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save';
+    }
+}
+
+async function testKey(name, index, btn) {
+    var resultSpan = btn.nextElementSibling;
+    resultSpan.textContent = 'testing...';
+    resultSpan.style.color = 'var(--text-dim)';
+    btn.disabled = true;
+
+    try {
+        var body = {name: name};
+        if (index !== null) body.index = index;
+
+        var resp = await fetch('/api/nav-i/api-keys/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        var data = await resp.json();
+        if (data.success) {
+            resultSpan.innerHTML = '<span style="color:var(--green);">&#10003;</span> Pass — ' + data.latency_ms + 'ms';
+            if (data.note) resultSpan.innerHTML += ' <span class="text-dim">(' + data.note + ')</span>';
+        } else {
+            resultSpan.innerHTML = '<span style="color:#ff4444;">&#10007;</span> Failed: ' + (data.error || 'unknown');
+        }
+    } catch(e) {
+        resultSpan.innerHTML = '<span style="color:#ff4444;">&#10007;</span> Error: ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function restartRecon(btn) {
+    if (!confirm('Restart RECON service? Active enrichment/embedding workers will be interrupted.')) return;
+
+    var statusEl = document.getElementById('restart-status');
+    btn.disabled = true;
+    statusEl.textContent = 'Restarting...';
+    statusEl.style.color = 'var(--text-dim)';
+
+    try {
+        var resp = await fetch('/api/nav-i/api-keys/restart-recon', {method: 'POST'});
+        var data = await resp.json();
+        if (data.success) {
+            statusEl.innerHTML = '<span style="color:var(--green);">&#10003;</span> Restarted successfully';
+        } else {
+            statusEl.innerHTML = '<span style="color:#ff4444;">&#10007;</span> ' + (data.error || 'Failed');
+        }
+    } catch(e) {
+        statusEl.innerHTML = '<span style="color:#ff4444;">&#10007;</span> ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeUpdateModal();
+});
+// Close modal on backdrop click
+document.getElementById('update-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeUpdateModal();
+});
+
+// Load on page init
+loadKeys();
+</script>
 {% endblock %}

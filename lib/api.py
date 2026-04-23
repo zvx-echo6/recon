@@ -1437,6 +1437,63 @@ def api_keys_reload():
     return jsonify({'count': count})
 
 
+
+# ── Nav-I API Key Admin ──
+
+@app.route('/api/nav-i/api-keys/list', methods=['GET'])
+def navi_api_keys_list():
+    from .api_keys_admin import list_keys
+    return jsonify({'keys': list_keys()})
+
+
+@app.route('/api/nav-i/api-keys/update', methods=['POST'])
+def navi_api_keys_update():
+    from .auth import require_auth
+    from .api_keys_admin import update_key, update_gemini_key
+    data = request.get_json(force=True)
+    name = data.get('name', '')
+    new_value = data.get('new_value', '')
+    index = data.get('index')  # optional, for Gemini key replacement
+    if not name or not new_value:
+        return jsonify({'error': 'name and new_value required'}), 400
+    if name == 'GEMINI_KEY' and index is not None:
+        result = update_gemini_key(int(index), new_value)
+    else:
+        result = update_key(name, new_value)
+    if result.get('success'):
+        return jsonify(result)
+    return jsonify(result), 400
+
+
+@app.route('/api/nav-i/api-keys/test', methods=['POST'])
+def navi_api_keys_test():
+    from .api_keys_admin import test_key
+    data = request.get_json(force=True)
+    name = data.get('name', '')
+    index = data.get('index')  # optional, for testing specific Gemini key
+    if not name:
+        return jsonify({'error': 'name required'}), 400
+    result = test_key(name, index=int(index) if index is not None else None)
+    return jsonify(result)
+
+
+@app.route('/api/nav-i/api-keys/restart-recon', methods=['POST'])
+def navi_api_keys_restart():
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['sudo', 'systemctl', 'restart', 'recon'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            return jsonify({'success': True, 'note': 'RECON service restarted'})
+        return jsonify({'success': False, 'error': result.stderr.strip()}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({'success': False, 'error': 'Restart timed out'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ── YouTube Cookie Management ──
 
 PEERTUBE_HOST = '192.168.1.170'
