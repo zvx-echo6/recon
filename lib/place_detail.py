@@ -272,6 +272,56 @@ def _apply_google_data(result, google_data, gaps):
     result['extratags'] = extratags
 
 
+
+
+# ── Wiki link rewriting ─────────────────────────────────────────────────
+
+# Extratag keys that may contain wiki references
+_WIKI_TAGS = ('wikipedia', 'wikidata', 'wikivoyage', 'appropedia')
+
+
+def _enrich_wiki_links(result):
+    """
+    Rewrite wiki-related extratags to local Kiwix URLs where available.
+    Falls back to public URLs. Only runs when has_wiki_rewriting is enabled.
+    Returns the (possibly enriched) result dict.
+    """
+    try:
+        from .deployment_config import get_deployment_config
+        deploy_config = get_deployment_config()
+        features = deploy_config.get('features', {})
+        if not features.get('has_wiki_rewriting', False):
+            return result
+    except Exception:
+        return result
+
+    try:
+        from .wiki_rewrite import rewrite_wiki_link
+    except ImportError:
+        logger.debug("wiki_rewrite module not available")
+        return result
+
+    extratags = result.get('extratags', {})
+    if not extratags:
+        return result
+
+    rewrites = {}
+    for tag in _WIKI_TAGS:
+        value = extratags.get(tag)
+        if not value:
+            continue
+        url, status = rewrite_wiki_link(tag, value)
+        if status != 'original':
+            extratags[tag] = url
+            rewrites[tag] = status
+
+    if rewrites:
+        result['extratags'] = extratags
+        result.setdefault('sources', {})['wiki_rewrites'] = rewrites
+        logger.debug(f"Wiki rewrites for {result.get('osm_type')}/{result.get('osm_id')}: {rewrites}")
+
+    return result
+
 # ── Nominatim parsing ───────────────────────────────────────────────────
 
 # Nominatim address array uses rank_address to indicate what each entry is.
@@ -560,6 +610,7 @@ def get_place_detail(osm_type, osm_id):
     if nominatim_result:
         nominatim_result = _enrich_with_overture(nominatim_result, osm_type, osm_id)
         nominatim_result = _enrich_with_google(nominatim_result, osm_type, osm_id)
+        nominatim_result = _enrich_wiki_links(nominatim_result)
         cache_put(osm_type, osm_id, nominatim_result, 'nominatim_local')
         return nominatim_result, 200
 
@@ -592,6 +643,7 @@ def get_place_detail(osm_type, osm_id):
     if overpass_result:
         overpass_result = _enrich_with_overture(overpass_result, osm_type, osm_id)
         overpass_result = _enrich_with_google(overpass_result, osm_type, osm_id)
+        overpass_result = _enrich_wiki_links(overpass_result)
         cache_put(osm_type, osm_id, overpass_result, 'overpass')
         return overpass_result, 200
 

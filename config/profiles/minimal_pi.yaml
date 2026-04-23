@@ -33,10 +33,13 @@ features:
   has_3d_terrain: false
   has_traffic_overlay: false
   has_landclass: false
+  has_public_lands_layer: false
   has_address_book_write: true
   has_overture_enrichment: false
   has_google_places_enrichment: false
   has_contacts: false
+  has_wiki_rewriting: false
+  has_wiki_discovery: false
 
 defaults:
   center: [44.0, -114.0]
