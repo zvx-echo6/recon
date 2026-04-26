@@ -39,6 +39,9 @@ features:
   has_traffic_overlay: true
   has_landclass: true
   has_public_lands_layer: true
+  has_contours: true
+  has_contours_test: true
+  has_contours_test_10ft: true
   has_address_book_write: true
   has_overture_enrichment: false
   has_google_places_enrichment: false
