@@ -460,6 +460,12 @@ def _parse_nominatim(data):
     # Filter names: only include extra name tags, not the bare "name"
     extra_names = {k: v for k, v in names.items() if k != 'name'} if names else {}
 
+    # Boundary geometry (polygon/multipolygon from Nominatim)
+    boundary = None
+    geom = data.get('geometry')
+    if geom and geom.get('type') in ('Polygon', 'MultiPolygon'):
+        boundary = geom
+
     return {
         'osm_type': osm_type,
         'osm_id': osm_id,
@@ -472,6 +478,7 @@ def _parse_nominatim(data):
         'extratags': extratags,
         'names': extra_names if extra_names else None,
         'source': 'nominatim_local',
+        'boundary': boundary,
     }
 
 
@@ -600,6 +607,7 @@ def get_place_detail(osm_type, osm_id):
             'addressdetails': 1,
             'hierarchy': 0,
             'keywords': 0,
+            'polygon_geojson': 1,
         }, timeout=5)
 
         if resp.status_code == 200:
@@ -780,8 +788,26 @@ def get_place_by_wikidata(wikidata_id):
         if wikipedia:
             result["extratags"]["wikipedia"] = wikipedia
 
-        # If we have an OSM relation ID, we could optionally fetch more details
-        # from get_place_detail, but that would add latency
+        # Fetch boundary polygon from Nominatim if we have an OSM relation ID
+        boundary = None
+        if osm_relation_id:
+            try:
+                nom_resp = http_requests.get(NOMINATIM_URL, params={
+                    'osmtype': 'R',
+                    'osmid': osm_relation_id,
+                    'format': 'json',
+                    'polygon_geojson': 1,
+                }, timeout=5)
+                if nom_resp.status_code == 200:
+                    nom_data = nom_resp.json()
+                    geom = nom_data.get('geometry')
+                    if geom and geom.get('type') in ('Polygon', 'MultiPolygon'):
+                        boundary = geom
+                        logger.debug(f"Wikidata boundary hit for {wikidata_id}")
+            except Exception as e:
+                logger.debug(f"Wikidata boundary fetch failed: {e}")
+
+        result["boundary"] = boundary
 
         logger.debug(f"Wikidata hit: {wikidata_id} -> {name}")
         return result, 200
