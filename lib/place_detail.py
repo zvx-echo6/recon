@@ -218,6 +218,12 @@ def _enrich_with_google(result, osm_type, osm_id):
     if cached_pid is not None:
         return result
 
+    # Skip new Google API calls for guest users (cached data already returned above)
+    from .auth import get_user_id
+    if not get_user_id():
+        logger.debug(f"google_places: skip API call for {osm_type}/{osm_id} — guest user")
+        return result
+
     # Daily cap check
     if not google_places.check_daily_cap():
         return result
