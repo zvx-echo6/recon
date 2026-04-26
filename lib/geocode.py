@@ -264,7 +264,7 @@ def _classify_and_parse(query):
 #  STEP 2: RETRIEVAL
 # ═══════════════════════════════════════════════════════════════════
 
-def _retrieve_netsyms(parsed, limit=10):
+def _retrieve_netsyms(parsed, limit=10, lat=None, lon=None):
     """Query Netsyms for structured address lookup. Returns list of candidate dicts."""
     try:
         from . import netsyms
@@ -278,12 +278,15 @@ def _retrieve_netsyms(parsed, limit=10):
     state = parsed.get('state', '')
     zipcode = parsed.get('zipcode', '')
 
+    # When viewport provided, fetch more results to sort from
+    fetch_limit = 200 if (lat is not None and lon is not None) else limit
+
     if number and street:
         rows = netsyms.lookup_by_street(
-            number, street, city=city, state=state, zipcode=zipcode, limit=limit
+            number, street, city=city, state=state, zipcode=zipcode, limit=fetch_limit
         )
     elif zipcode:
-        rows = netsyms.lookup_by_zipcode(zipcode, limit=limit)
+        rows = netsyms.lookup_by_zipcode(zipcode, limit=fetch_limit)
     else:
         return []
 
@@ -305,6 +308,10 @@ def _retrieve_netsyms(parsed, limit=10):
             '_city': row.get('city', ''),
             '_state': row.get('state', ''),
         })
+    # Sort by viewport distance if lat/lon provided, then limit
+    if lat is not None and lon is not None and results:
+        results.sort(key=lambda r: (r["lat"] - lat)**2 + (r["lon"] - lon)**2)
+        results = results[:limit]
     return results
 
 
@@ -728,7 +735,7 @@ def geocode(query, limit=10, lat=None, lon=None, zoom=None):
 
     if intent == 'ADDRESS':
         # Parallel: Netsyms (structured) + Photon (freetext with expanded query)
-        netsyms_results = _retrieve_netsyms(parsed, limit=limit)
+        netsyms_results = _retrieve_netsyms(parsed, limit=limit, lat=lat, lon=lon)
         photon_results = _retrieve_photon_freetext(
             parsed.get('expanded_query', q), limit=limit, lat=lat, lon=lon, zoom=zoom
         )
@@ -737,7 +744,7 @@ def geocode(query, limit=10, lat=None, lon=None, zoom=None):
         candidates = netsyms_results + photon_results + photon_struct
 
     elif intent == 'POSTCODE':
-        netsyms_results = _retrieve_netsyms(parsed, limit=limit)
+        netsyms_results = _retrieve_netsyms(parsed, limit=limit, lat=lat, lon=lon)
         photon_results = _retrieve_photon_freetext(q, limit=limit, lat=lat, lon=lon, zoom=zoom)
         candidates = netsyms_results + photon_results
 
