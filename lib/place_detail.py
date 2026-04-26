@@ -661,3 +661,131 @@ def get_place_detail(osm_type, osm_id):
 
     # Not found in either source (no errors, just empty results)
     return {'error': f'{osm_type}/{osm_id} not found'}, 404
+
+
+# ── Wikidata lookup ─────────────────────────────────────────────────────
+
+WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
+
+def get_place_by_wikidata(wikidata_id):
+    """
+    Fetch place details from Wikidata entity.
+
+    Returns (dict, status_code):
+      - (data, 200) on success
+      - (error_dict, 404) if entity not found
+      - (error_dict, 400) if invalid ID format
+      - (error_dict, 502) on API error
+    """
+    # Validate wikidata ID format (Q followed by digits)
+    wikidata_id = wikidata_id.upper().strip()
+    if not wikidata_id.startswith("Q") or not wikidata_id[1:].isdigit():
+        return {"error": f"Invalid wikidata ID: {wikidata_id}. Must be Q followed by digits."}, 400
+
+    try:
+        resp = http_requests.get(WIKIDATA_API_URL, params={
+            "action": "wbgetentities",
+            "ids": wikidata_id,
+            "format": "json",
+            "languages": "en",
+            "props": "labels|descriptions|claims|sitelinks",
+        }, timeout=10, headers={"User-Agent": "Navi/1.0 (forge.echo6.co/matt/recon)"})
+
+        if resp.status_code != 200:
+            logger.warning(f"Wikidata API error for {wikidata_id}: HTTP {resp.status_code}")
+            return {"error": "Wikidata API error"}, 502
+
+        data = resp.json()
+        entities = data.get("entities", {})
+        entity = entities.get(wikidata_id)
+
+        if not entity or entity.get("missing"):
+            return {"error": f"Wikidata entity {wikidata_id} not found"}, 404
+
+        # Extract basic info
+        labels = entity.get("labels", {})
+        descriptions = entity.get("descriptions", {})
+        claims = entity.get("claims", {})
+
+        name = labels.get("en", {}).get("value", wikidata_id)
+        description = descriptions.get("en", {}).get("value", "")
+
+        # Extract coordinates from P625 (coordinate location)
+        lat, lon = None, None
+        if "P625" in claims:
+            coord_claim = claims["P625"]
+            if coord_claim and coord_claim[0].get("mainsnak", {}).get("datavalue"):
+                coord_val = coord_claim[0]["mainsnak"]["datavalue"]["value"]
+                lat = coord_val.get("latitude")
+                lon = coord_val.get("longitude")
+
+        # Extract population from P1082
+        population = None
+        if "P1082" in claims:
+            pop_claims = claims["P1082"]
+            if pop_claims:
+                # Get the most recent population value
+                for claim in pop_claims:
+                    if claim.get("mainsnak", {}).get("datavalue"):
+                        try:
+                            population = int(claim["mainsnak"]["datavalue"]["value"]["amount"].lstrip("+"))
+                            break
+                        except (KeyError, ValueError):
+                            pass
+
+        # Extract country from P17
+        country = None
+        if "P17" in claims:
+            country_claims = claims["P17"]
+            if country_claims and country_claims[0].get("mainsnak", {}).get("datavalue"):
+                country_id = country_claims[0]["mainsnak"]["datavalue"]["value"]["id"]
+                # Could resolve this to a name, but for now just store the ID
+
+        # Extract instance of (P31) for type classification
+        instance_of = []
+        if "P31" in claims:
+            for claim in claims["P31"]:
+                if claim.get("mainsnak", {}).get("datavalue"):
+                    instance_of.append(claim["mainsnak"]["datavalue"]["value"]["id"])
+
+        # Extract OSM relation ID if available (P402)
+        osm_relation_id = None
+        if "P402" in claims:
+            osm_claims = claims["P402"]
+            if osm_claims and osm_claims[0].get("mainsnak", {}).get("datavalue"):
+                osm_relation_id = osm_claims[0]["mainsnak"]["datavalue"]["value"]
+
+        # Extract Wikipedia sitelink
+        sitelinks = entity.get("sitelinks", {})
+        wikipedia = None
+        if "enwiki" in sitelinks:
+            wiki_title = sitelinks["enwiki"].get("title", "")
+            if wiki_title:
+                wikipedia = f"en:{wiki_title}"
+
+        result = {
+            "wikidata_id": wikidata_id,
+            "name": name,
+            "description": description,
+            "centroid": {"lat": lat, "lon": lon} if lat and lon else None,
+            "population": population,
+            "instance_of": instance_of,
+            "osm_relation_id": osm_relation_id,
+            "source": "wikidata",
+            "extratags": {
+                "wikidata": wikidata_id,
+            },
+        }
+
+        if wikipedia:
+            result["extratags"]["wikipedia"] = wikipedia
+
+        # If we have an OSM relation ID, we could optionally fetch more details
+        # from get_place_detail, but that would add latency
+
+        logger.debug(f"Wikidata hit: {wikidata_id} -> {name}")
+        return result, 200
+
+    except Exception as e:
+        logger.warning(f"Wikidata error for {wikidata_id}: {e}")
+        return {"error": "Wikidata lookup failed"}, 502

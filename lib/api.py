@@ -25,7 +25,7 @@ from werkzeug.utils import secure_filename
 from .utils import get_config, content_hash, clean_filename_to_title, derive_source_and_category, generate_download_url, setup_logging
 from .status import StatusDB
 from .deployment_config import get_deployment_config
-from .place_detail import get_place_detail
+from .place_detail import get_place_detail, get_place_by_wikidata
 from .landclass import lookup_landclass, format_summary
 
 logger = setup_logging('recon.api')
@@ -1232,6 +1232,13 @@ def api_traffic_flow(z, x, y):
 def api_place_detail(osm_type, osm_id):
     """Proxy place details from local Nominatim or Overpass API."""
     result, status = get_place_detail(osm_type, osm_id)
+    return jsonify(result), status
+
+
+@app.route("/api/place/wikidata/<wikidata_id>")
+def api_place_wikidata(wikidata_id):
+    """Fetch place details from Wikidata entity."""
+    result, status = get_place_by_wikidata(wikidata_id)
     return jsonify(result), status
 
 
