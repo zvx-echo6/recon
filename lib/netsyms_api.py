@@ -35,6 +35,19 @@ def api_netsyms_health():
     return jsonify(netsyms.health())
 
 
+
+def _safe_float(val, lo, hi):
+    """Parse val as float; return None if missing, non-numeric, or out of [lo, hi]."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if lo <= f <= hi:
+            return f
+    except (ValueError, TypeError):
+        pass
+    return None
+
 @geocode_bp.route('/api/geocode')
 def api_geocode():
     """
@@ -58,7 +71,12 @@ def api_geocode():
     except (ValueError, TypeError):
         limit = 10
 
-    result = nav_tools.geocode(q, limit=limit)
+    # Viewport bias parameters (optional)
+    lat = _safe_float(request.args.get("lat"), -90, 90)
+    lon = _safe_float(request.args.get("lon"), -180, 180)
+    zoom = _safe_float(request.args.get("zoom"), 0, 22)
+
+    result = nav_tools.geocode(q, limit=limit, lat=lat, lon=lon, zoom=zoom)
     return jsonify(result)
 
 

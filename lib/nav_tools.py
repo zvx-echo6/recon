@@ -50,10 +50,10 @@ def _haversine_m(lat1, lon1, lat2, lon2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def geocode(query: str, limit: int = 10):
+def geocode(query: str, limit: int = 10, lat=None, lon=None, zoom=None):
     """Delegate to the structured geocode module. See lib/geocode.py."""
     from . import geocode as geocode_mod
-    return geocode_mod.geocode(query, limit=limit)
+    return geocode_mod.geocode(query, limit=limit, lat=lat, lon=lon, zoom=zoom)
 
 
 def _geocode(query: str):

@@ -334,21 +334,20 @@ def _retrieve_photon_structured(parsed, limit=10):
     return _parse_photon_features(data.get('features', []), 'photon')
 
 
-def _retrieve_photon_freetext(query, limit=10):
+def _retrieve_photon_freetext(query, limit=10, lat=None, lon=None, zoom=None):
     """Query Photon /api for free-text search with location bias."""
     try:
         params = {
             'q': query,
             'limit': limit,
-            'lat': GEOCODE_BIAS_LAT,
-            'lon': GEOCODE_BIAS_LON,
-            'zoom': GEOCODE_BIAS_ZOOM,
+            'lat': lat if lat is not None else GEOCODE_BIAS_LAT,
+            'lon': lon if lon is not None else GEOCODE_BIAS_LON,
+            'zoom': int(zoom) if zoom is not None else GEOCODE_BIAS_ZOOM,
         }
         resp = requests.get(f"{PHOTON_URL}/api", params=params, timeout=5)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        logger.debug("Photon /api failed: %s", e)
         return []
 
     return _parse_photon_features(data.get('features', []), 'photon')
@@ -663,7 +662,7 @@ def _annotate_with_address_book(results):
 #  PUBLIC API
 # ═══════════════════════════════════════════════════════════════════
 
-def geocode(query, limit=10):
+def geocode(query, limit=10, lat=None, lon=None, zoom=None):
     """
     Structured geocoding with multi-source retrieval and reranking.
 
@@ -731,7 +730,7 @@ def geocode(query, limit=10):
         # Parallel: Netsyms (structured) + Photon (freetext with expanded query)
         netsyms_results = _retrieve_netsyms(parsed, limit=limit)
         photon_results = _retrieve_photon_freetext(
-            parsed.get('expanded_query', q), limit=limit
+            parsed.get('expanded_query', q), limit=limit, lat=lat, lon=lon, zoom=zoom
         )
         # Also try Photon /structured for addresses
         photon_struct = _retrieve_photon_structured(parsed, limit=5)
@@ -739,11 +738,11 @@ def geocode(query, limit=10):
 
     elif intent == 'POSTCODE':
         netsyms_results = _retrieve_netsyms(parsed, limit=limit)
-        photon_results = _retrieve_photon_freetext(q, limit=limit)
+        photon_results = _retrieve_photon_freetext(q, limit=limit, lat=lat, lon=lon, zoom=zoom)
         candidates = netsyms_results + photon_results
 
     elif intent in ('LOCALITY', 'POI', 'UNKNOWN'):
-        candidates = _retrieve_photon_freetext(q, limit=limit)
+        candidates = _retrieve_photon_freetext(q, limit=limit, lat=lat, lon=lon, zoom=zoom)
 
     # ── Deduplicate by (lat, lon) proximity ──
     deduped = []
