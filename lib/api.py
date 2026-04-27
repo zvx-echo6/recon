@@ -2704,3 +2704,21 @@ def api_metrics_history():
         return jsonify({'type': metric_type, 'hours': hours, 'points': points})
     except Exception as e:
         return jsonify({'type': metric_type, 'hours': hours, 'points': [], 'error': str(e)})
+
+
+# ── Auth state endpoint ─────────────────────────────────────────────────────
+# Returns current auth state for frontend consumption.
+# This endpoint must be behind Caddy forward_auth to receive X-Authentik-* headers.
+@app.route('/api/auth/whoami')
+def api_auth_whoami():
+    """Return auth state for frontend. Behind forward_auth, so headers are present when authenticated."""
+    username = request.headers.get('X-Authentik-Username')
+    if username:
+        return jsonify({
+            'authenticated': True,
+            'username': username,
+        })
+    return jsonify({
+        'authenticated': False,
+        'username': None,
+    })
