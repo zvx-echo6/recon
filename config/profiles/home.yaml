@@ -41,7 +41,7 @@ features:
   has_public_lands_layer: true
   has_contours: true
   has_contours_test: true
-  has_contours_test_10ft: true
+  has_contours_test_10ft: false
   has_address_book_write: false
   has_overture_enrichment: true
   has_google_places_enrichment: true
