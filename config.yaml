@@ -408,9 +408,14 @@ service:
 
 peertube:
   api_base: http://192.168.1.170       # Internal PeerTube API (CT 110 nginx)
+  api_url: http://192.168.1.170:9000   # Direct PeerTube API (bypasses nginx, for writer)
+  host_header: stream.echo6.co         # Host header for PeerTube API requests
+  username: root                        # PeerTube admin username
+  password_env: PEERTUBE_PASSWORD       # Env var holding PeerTube admin password
   public_url: https://stream.echo6.co  # Public URL for video links
   fetch_timeout: 30                     # HTTP timeout for API/VTT requests
   rate_limit_delay: 0.5                 # Delay between video ingestions (seconds)
+  writer_rate_limit: 0.1               # Delay between category push API calls (seconds)
   poll_interval: 1800                    # Seconds between PeerTube acquisition polls (30 min)
 
 scraper:
