@@ -42,13 +42,7 @@ logger = setup_logging('recon.enricher')
 STALE_ENRICHING_HOURS = 2
 
 # ── Classification allowlists ───────────────────────────────────────────────
-VALID_DOMAINS = {
-    'Agriculture & Livestock', 'Civil Organization', 'Communications',
-    'Food Systems', 'Foundational Skills', 'Logistics', 'Medical',
-    'Navigation', 'Operations', 'Power Systems', 'Preservation & Storage',
-    'Security', 'Shelter & Construction', 'Technology', 'Tools & Equipment',
-    'Vehicles', 'Water Systems', 'Wilderness Skills',
-}
+from .recon_domains import VALID_DOMAINS
 VALID_KNOWLEDGE_TYPES = {'foundational', 'procedural', 'operational'}
 VALID_COMPLEXITIES = {'basic', 'intermediate', 'advanced'}
 

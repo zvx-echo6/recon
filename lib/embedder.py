@@ -27,13 +27,7 @@ from .utils import resolve_text_dir
 logger = setup_logging('recon.embedder')
 
 # ── Classification allowlists ───────────────────────────────────────────────
-VALID_DOMAINS = {
-    'Agriculture & Livestock', 'Civil Organization', 'Communications',
-    'Food Systems', 'Foundational Skills', 'Logistics', 'Medical',
-    'Navigation', 'Operations', 'Power Systems', 'Preservation & Storage',
-    'Security', 'Shelter & Construction', 'Technology', 'Tools & Equipment',
-    'Vehicles', 'Water Systems', 'Wilderness Skills',
-}
+from .recon_domains import VALID_DOMAINS
 VALID_KNOWLEDGE_TYPES = {'foundational', 'procedural', 'operational'}
 VALID_COMPLEXITIES = {'basic', 'intermediate', 'advanced'}
 

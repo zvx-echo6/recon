@@ -1,0 +1,20 @@
+{
+  "name": "peertube-plugin-recon-domains",
+  "version": "1.0.0",
+  "description": "Registers 18 RECON knowledge domains as PeerTube video categories (IDs 100-117)",
+  "engine": {
+    "peertube": ">=6.0.0"
+  },
+  "keywords": [
+    "peertube",
+    "plugin"
+  ],
+  "homepage": "https://forge.echo6.co/matt/recon",
+  "author": "Echo6",
+  "license": "MIT",
+  "library": "./main.js",
+  "staticDirs": {},
+  "css": [],
+  "clientScripts": [],
+  "translations": {}
+}
