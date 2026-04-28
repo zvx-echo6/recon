@@ -395,37 +395,20 @@ def api_peertube_review_stats():
 
 @app.route('/api/peertube/review/items')
 def api_peertube_review_items():
-    import json as _json
-    from .recon_domains import VALID_DOMAINS
+    from .domain_assigner import _count_domains_from_qdrant, _get_qdrant_client
     db = StatusDB()
     config = get_config()
     items = db.get_items_by_domain_status('tied_manual', limit=200)
 
+    qdrant = _get_qdrant_client(config)
+    collection = config['vector_db']['collection']
+
     result = []
-    concepts_dir = config['paths']['concepts']
     for item in items:
         file_hash = item['hash']
-        # Count domains from concept files
-        top_domains = []
-        doc_concepts_dir = os.path.join(concepts_dir, file_hash)
-        if os.path.isdir(doc_concepts_dir):
-            from collections import Counter
-            domain_counter = Counter()
-            for fname in os.listdir(doc_concepts_dir):
-                if not fname.startswith('window_') or not fname.endswith('.json'):
-                    continue
-                try:
-                    with open(os.path.join(doc_concepts_dir, fname)) as f:
-                        concepts = _json.load(f)
-                    for c in concepts:
-                        if isinstance(c, dict):
-                            dom = c.get('domain')
-                            if isinstance(dom, str) and dom in VALID_DOMAINS:
-                                domain_counter[dom] += 1
-                except Exception:
-                    continue
-            top_domains = [{'domain': d, 'count': cnt}
-                           for d, cnt in domain_counter.most_common(5)]
+        domain_counter = _count_domains_from_qdrant(qdrant, collection, file_hash)
+        top_domains = [{'domain': d, 'count': cnt}
+                       for d, cnt in domain_counter.most_common(5)]
 
         result.append({
             'hash': file_hash,
