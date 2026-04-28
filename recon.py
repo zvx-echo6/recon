@@ -865,6 +865,7 @@ def cmd_ingest(args):
 
 def cmd_assign_categories(args):
     """Assign RECON domains to PeerTube videos and push categories."""
+    from qdrant_client import QdrantClient
     from lib.domain_assigner import compute_assignment, run_tiebreaker_pass
     from lib.peertube_writer import push_pending, extract_uuid
     from lib.recon_domains import DOMAIN_CATEGORY_MAP
@@ -876,11 +877,13 @@ def cmd_assign_categories(args):
 
     if args.backfill:
         # Pass 1: assign domains to all complete stream docs with no assignment
+        # or that previously got needs_reprocess
         conn = db._get_conn()
         q = """SELECT d.hash FROM documents d
                LEFT JOIN catalogue c ON d.hash = c.hash
                WHERE d.status = 'complete'
-                 AND d.recon_domain IS NULL
+                 AND (d.recon_domain IS NULL
+                      OR d.recon_domain_status = 'needs_reprocess')
                  AND c.source = 'stream.echo6.co'
                ORDER BY d.discovered_at"""
         if limit:
@@ -895,10 +898,17 @@ def cmd_assign_categories(args):
         print(f"Backfill: processing {len(hashes)} documents" +
               (" [DRY RUN]" if dry_run else ""))
 
-        stats = {'assigned': 0, 'tied_pass_1': 0, 'needs_reprocess': 0, 'errors': 0}
+        # Create one Qdrant client for the entire backfill
+        qdrant = QdrantClient(
+            host=config['vector_db']['host'],
+            port=config['vector_db']['port'],
+            timeout=60
+        )
+
+        stats = {'assigned': 0, 'tied_pass_1': 0, 'no_concepts': 0, 'needs_reprocess': 0, 'errors': 0}
         for i, file_hash in enumerate(hashes):
             try:
-                domain, status = compute_assignment(file_hash, db, config)
+                domain, status = compute_assignment(file_hash, db, config, qdrant=qdrant)
                 stats[status] = stats.get(status, 0) + 1
                 if not dry_run:
                     db.set_domain_assignment(file_hash, domain, status)
@@ -946,21 +956,9 @@ def cmd_assign_categories(args):
         for item in items:
             file_hash = item['hash']
             if dry_run:
-                concepts_dir = os.path.join(config['paths']['concepts'], file_hash)
-                has_concepts = os.path.isdir(concepts_dir)
-                concept_count = len(os.listdir(concepts_dir)) if has_concepts else 0
-                detail = f"DELETE {concept_count} concept files" if has_concepts else "no concept dir"
-                print(f"  Would reprocess: {file_hash[:12]} — {item.get('filename', '?')} ({detail})")
+                print(f"  Would reprocess: {file_hash[:12]} — {item.get('filename', '?')}")
                 requeued += 1
                 continue
-
-            # Remove stale concept files
-            import shutil
-            concepts_dir = os.path.join(config['paths']['concepts'], file_hash)
-            if os.path.isdir(concepts_dir):
-                logger.info(f"  Deleting concept dir: {concepts_dir} "
-                            f"({len(os.listdir(concepts_dir))} files, hash={file_hash})")
-                shutil.rmtree(concepts_dir)
 
             # Reset document status to allow re-processing
             conn = db._get_conn()

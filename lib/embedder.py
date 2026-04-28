@@ -411,7 +411,7 @@ def embed_single(file_hash, db, config):
                 from .domain_assigner import compute_assignment
                 from .peertube_writer import push_category, extract_uuid
                 from .recon_domains import DOMAIN_CATEGORY_MAP
-                domain, status = compute_assignment(file_hash, db, config)
+                domain, status = compute_assignment(file_hash, db, config, qdrant=qdrant)
                 db.set_domain_assignment(file_hash, domain, status)
                 if domain and status == 'assigned':
                     cat_id = DOMAIN_CATEGORY_MAP[domain]

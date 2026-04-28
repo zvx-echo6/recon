@@ -1,23 +1,29 @@
 """
 RECON Domain Assigner
 
-Computes per-video domain assignments from concept extraction results.
+Computes per-video domain assignments from Qdrant vector payloads.
 Two functions, two execution modes:
 
   compute_assignment() — pass 1, inline from post-embed hook
   run_tiebreaker_pass() — batch, resolves ties via channel concept scan
+
+Data source: Qdrant `domain` payload field on concept vectors.
+Previously read on-disk concept JSON files; migrated to Qdrant as
+single source of truth (2026-04-28).
 
 Status values written to documents.recon_domain_status:
   assigned       — clear winner from pass 1 concept count
   tied_pass_1    — concept tie, awaiting channel tiebreaker
   tied_pass_2    — resolved by channel tiebreaker
   tied_manual    — needs human review (dashboard)
-  needs_reprocess — missing concepts or only legacy domains
+  no_concepts    — terminal, zero concept vectors in Qdrant
+  needs_reprocess — transient failure (Qdrant error, etc.)
   manual_assigned — human override from dashboard
 """
-import json
-import os
 from collections import Counter
+
+from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 
 from .recon_domains import VALID_DOMAINS, DOMAIN_CATEGORY_MAP
 from .utils import setup_logging
@@ -28,40 +34,51 @@ logger = setup_logging('recon.domain_assigner')
 MEGA_CHANNEL_THRESHOLD = 500
 
 
-def _count_concept_domains(concepts_dir, file_hash):
-    """Read concept files and count valid domain occurrences.
+def _get_qdrant_client(config):
+    """Create a QdrantClient from RECON config.
+
+    Callers should create one client and pass it through rather than
+    calling this repeatedly.
+    """
+    logger.debug("Creating new QdrantClient (caller did not pass one)")
+    return QdrantClient(
+        host=config['vector_db']['host'],
+        port=config['vector_db']['port'],
+        timeout=60
+    )
+
+
+def _count_domains_from_qdrant(qdrant, collection, doc_hash):
+    """Count valid domain occurrences for a single document from Qdrant.
+
+    Scrolls all points matching doc_hash and counts domain values.
 
     Args:
-        concepts_dir: Base concepts directory (e.g. /opt/recon/data/concepts)
-        file_hash: Document hash
+        qdrant: QdrantClient instance
+        collection: Qdrant collection name
+        doc_hash: Document hash to query
 
     Returns:
-        Counter of {domain_name: count} for valid domains only,
-        or None if no concept directory exists.
+        Counter of {domain_name: count} for valid domains.
+        Empty Counter if no points found (never None).
     """
-    doc_concepts_dir = os.path.join(concepts_dir, file_hash)
-    if not os.path.isdir(doc_concepts_dir):
-        return None
-
     domain_counter = Counter()
+    offset = None
 
-    for fname in os.listdir(doc_concepts_dir):
-        if not fname.startswith('window_') or not fname.endswith('.json'):
-            continue
-        fpath = os.path.join(doc_concepts_dir, fname)
-        try:
-            with open(fpath, 'r') as f:
-                concepts = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
+    while True:
+        results, next_offset = qdrant.scroll(
+            collection_name=collection,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="doc_hash", match=MatchValue(value=doc_hash))
+            ]),
+            with_payload=["domain"],
+            with_vectors=False,
+            limit=200,
+            offset=offset,
+        )
 
-        if not isinstance(concepts, list):
-            continue
-
-        for concept in concepts:
-            if not isinstance(concept, dict):
-                continue
-            dom = concept.get('domain')
+        for point in results:
+            dom = point.payload.get('domain')
             if isinstance(dom, str) and dom in VALID_DOMAINS:
                 domain_counter[dom] += 1
             elif isinstance(dom, list):
@@ -69,29 +86,94 @@ def _count_concept_domains(concepts_dir, file_hash):
                     if isinstance(d, str) and d in VALID_DOMAINS:
                         domain_counter[d] += 1
 
+        if next_offset is None:
+            break
+        offset = next_offset
+
     return domain_counter
 
 
-def compute_assignment(file_hash, db, config):
+def _count_domains_from_qdrant_batch(qdrant, collection, doc_hashes):
+    """Count valid domain occurrences across multiple documents from Qdrant.
+
+    Single scroll with MatchAny filter, with offset pagination for large
+    result sets.
+
+    Args:
+        qdrant: QdrantClient instance
+        collection: Qdrant collection name
+        doc_hashes: List of document hashes to query
+
+    Returns:
+        Counter of {domain_name: count} aggregated across all matching points.
+    """
+    if not doc_hashes:
+        return Counter()
+
+    domain_counter = Counter()
+    offset = None
+
+    while True:
+        results, next_offset = qdrant.scroll(
+            collection_name=collection,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="doc_hash", match=MatchAny(any=doc_hashes))
+            ]),
+            with_payload=["domain"],
+            with_vectors=False,
+            limit=10000,
+            offset=offset,
+        )
+
+        for point in results:
+            dom = point.payload.get('domain')
+            if isinstance(dom, str) and dom in VALID_DOMAINS:
+                domain_counter[dom] += 1
+            elif isinstance(dom, list):
+                for d in dom:
+                    if isinstance(d, str) and d in VALID_DOMAINS:
+                        domain_counter[d] += 1
+
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    return domain_counter
+
+
+def compute_assignment(file_hash, db, config, qdrant=None):
     """Compute domain assignment for a single document (pass 1).
 
-    Counts domain occurrences across all concepts. If a single domain
-    wins, assigns it. If tied, defers to batch tiebreaker.
+    Counts domain occurrences across all concept vectors in Qdrant.
+    If a single domain wins, assigns it. If tied, defers to batch
+    tiebreaker.
 
     Args:
         file_hash: Document hash
         db: StatusDB instance
         config: RECON config dict
+        qdrant: Optional QdrantClient (created if not provided)
 
     Returns:
         (domain, status) tuple where domain is a string or None,
-        and status is one of: 'assigned', 'tied_pass_1', 'needs_reprocess'
+        and status is one of: 'assigned', 'tied_pass_1', 'no_concepts',
+        'needs_reprocess'
     """
-    concepts_dir = config['paths']['concepts']
-    domain_counter = _count_concept_domains(concepts_dir, file_hash)
+    owns_client = False
+    if qdrant is None:
+        qdrant = _get_qdrant_client(config)
+        owns_client = True
 
-    if domain_counter is None or len(domain_counter) == 0:
+    collection = config['vector_db']['collection']
+
+    try:
+        domain_counter = _count_domains_from_qdrant(qdrant, collection, file_hash)
+    except Exception as e:
+        logger.warning(f"Qdrant query failed for {file_hash[:12]}: {e}")
         return (None, 'needs_reprocess')
+
+    if len(domain_counter) == 0:
+        return (None, 'no_concepts')
 
     top = domain_counter.most_common(2)
     top_domain = top[0][0]
@@ -104,9 +186,9 @@ def compute_assignment(file_hash, db, config):
     return (None, 'tied_pass_1')
 
 
-def _get_tied_domains(concepts_dir, file_hash):
+def _get_tied_domains(qdrant, collection, file_hash):
     """Get the set of domains tied for first place in a document's concepts."""
-    domain_counter = _count_concept_domains(concepts_dir, file_hash)
+    domain_counter = _count_domains_from_qdrant(qdrant, collection, file_hash)
     if not domain_counter:
         return []
 
@@ -150,32 +232,32 @@ def _channel_video_count(db, channel_name):
     return row['cnt'] if row else 0
 
 
-def run_tiebreaker_pass(db, config):
-    """Resolve tied domain assignments using channel-level concept analysis.
+def run_tiebreaker_pass(db, config, qdrant=None):
+    """Resolve tied domain assignments using channel-level Qdrant analysis.
 
     Processes all documents where recon_domain_status = 'tied_pass_1'.
 
-    Pass 2: For each tied document, reads concept files from all other
-    videos in the same channel and picks the tied domain with the highest
-    channel-wide count.
+    For each tied document, queries Qdrant for domain counts from all
+    other videos in the same channel and picks the tied domain with the
+    highest channel-wide count.
 
-    Pass 3 (defensive re-run): Re-reads the same channel concept files a
-    second time with identical logic. This catches concept-file changes
-    that occurred mid-run (e.g. concurrent enrichment writing new windows).
-    In steady state pass 3 produces the same result as pass 2, but under
-    concurrent writes it can resolve a tie that pass 2 missed.
-
-    Mega-channels (>500 videos) skip both passes and go straight to
+    Mega-channels (>500 videos) skip tiebreaking and go straight to
     'tied_manual' for dashboard review.
 
     Args:
         db: StatusDB instance
         config: RECON config dict
+        qdrant: Optional QdrantClient (created if not provided)
 
     Returns:
         Dict with counts: resolved, manual, skipped, errors
     """
-    concepts_dir = config['paths']['concepts']
+    owns_client = False
+    if qdrant is None:
+        qdrant = _get_qdrant_client(config)
+        owns_client = True
+
+    collection = config['vector_db']['collection']
     tied_items = db.get_items_by_domain_status('tied_pass_1')
 
     stats = {'resolved': 0, 'manual': 0, 'skipped': 0, 'errors': 0, 'total': len(tied_items)}
@@ -189,9 +271,9 @@ def run_tiebreaker_pass(db, config):
         channel = item.get('category', '')
 
         try:
-            tied_domains = _get_tied_domains(concepts_dir, file_hash)
+            tied_domains = _get_tied_domains(qdrant, collection, file_hash)
             if not tied_domains:
-                db.set_domain_assignment(file_hash, None, 'needs_reprocess')
+                db.set_domain_assignment(file_hash, None, 'no_concepts')
                 stats['skipped'] += 1
                 continue
 
@@ -215,12 +297,9 @@ def run_tiebreaker_pass(db, config):
 
             # Channel tiebreaker: count domains across all other videos in channel
             other_hashes = _channel_video_hashes(db, channel, exclude_hash=file_hash)
-            channel_domain_counts = Counter()
-
-            for other_hash in other_hashes:
-                other_counts = _count_concept_domains(concepts_dir, other_hash)
-                if other_counts:
-                    channel_domain_counts.update(other_counts)
+            channel_domain_counts = _count_domains_from_qdrant_batch(
+                qdrant, collection, other_hashes
+            )
 
             # Among tied domains only, pick highest channel-wide count
             best_domain = None
@@ -231,48 +310,21 @@ def run_tiebreaker_pass(db, config):
                     best_count = c
                     best_domain = dom
 
-            # Pass 2: check if channel tiebreaker resolved it
+            # Check if channel tiebreaker resolved it
             tied_at_channel = [d for d in tied_domains
                                if channel_domain_counts.get(d, 0) == best_count]
 
             if len(tied_at_channel) == 1:
                 db.set_domain_assignment(file_hash, best_domain, 'tied_pass_2')
                 stats['resolved'] += 1
-                logger.debug(f"  {file_hash[:12]}: resolved → {best_domain} (pass 2 channel tiebreaker)")
+                logger.debug(f"  {file_hash[:12]}: resolved → {best_domain} (channel tiebreaker)")
                 continue
 
-            # Pass 3: defensive re-run — re-count channel concepts to catch
-            # concept-file changes that occurred mid-run. Identical logic to
-            # pass 2; resolves races where files were written between the
-            # two reads.
-            channel_domain_counts_p3 = Counter()
-            for other_hash in other_hashes:
-                other_counts = _count_concept_domains(concepts_dir, other_hash)
-                if other_counts:
-                    channel_domain_counts_p3.update(other_counts)
-
-            best_domain_p3 = None
-            best_count_p3 = -1
-            for dom in tied_domains:
-                c = channel_domain_counts_p3.get(dom, 0)
-                if c > best_count_p3:
-                    best_count_p3 = c
-                    best_domain_p3 = dom
-
-            tied_at_p3 = [d for d in tied_domains
-                          if channel_domain_counts_p3.get(d, 0) == best_count_p3]
-
-            if len(tied_at_p3) == 1:
-                db.set_domain_assignment(file_hash, best_domain_p3, 'tied_pass_2')
-                stats['resolved'] += 1
-                logger.debug(f"  {file_hash[:12]}: resolved → {best_domain_p3} (pass 3 defensive re-run)")
-                continue
-
-            # Still tied after pass 3 — mark for manual review
+            # Still tied after channel scan — mark for manual review
             fallback = sorted(tied_domains)[0]
             db.set_domain_assignment(file_hash, fallback, 'tied_manual')
             stats['manual'] += 1
-            logger.debug(f"  {file_hash[:12]}: still tied after pass 3, → tied_manual")
+            logger.debug(f"  {file_hash[:12]}: still tied after channel scan, → tied_manual")
 
         except Exception as e:
             logger.warning(f"  Tiebreaker error for {file_hash[:12]}: {e}")
