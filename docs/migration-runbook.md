@@ -32,7 +32,7 @@ ls -la /tmp/peertube_prod.pre-domain-feature.*.sql  # Confirm non-zero
 ```bash
 # Check last rsync to Contabo
 ssh zvx@192.168.1.130 'ls -la /opt/recon/data/concepts/ | tail -5'
-ssh root@100.64.0.1 'ls -la /opt/recon-backup/concepts/ | tail -5'
+ssh root@100.64.0.1 'ls -la /opt/backups/recon/concepts/ | tail -5'
 # Confirm timestamps match within 6 hours
 ```
 
@@ -403,17 +403,17 @@ print('Cleared push timestamps')
 ### Restore concepts after failed --reprocess-missing
 
 ```bash
-# Concept backups are on Contabo at /opt/recon-backup/concepts/
+# Concept backups are on Contabo at /opt/backups/recon/concepts/
 # Identify which hashes were deleted (check RECON logs)
 ssh zvx@192.168.1.130 'grep "Deleting concept dir" /opt/recon/logs/recon.log | tail -20'
 
 # Restore specific hash from Contabo
 HASH=<hash_from_log>
-ssh root@100.64.0.1 "tar -cf - -C /opt/recon-backup/concepts/ $HASH" | \
+ssh root@100.64.0.1 "tar -cf - -C /opt/backups/recon/concepts/ $HASH" | \
   ssh zvx@192.168.1.130 "tar -xf - -C /opt/recon/data/concepts/"
 
 # Restore ALL concepts (nuclear option)
-ssh root@100.64.0.1 'rsync -av /opt/recon-backup/concepts/ zvx@192.168.1.130:/opt/recon/data/concepts/'
+ssh root@100.64.0.1 'rsync -av /opt/backups/recon/concepts/ zvx@192.168.1.130:/opt/recon/data/concepts/'
 ```
 
 ### Fully remove feature
