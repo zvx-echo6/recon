@@ -25,4 +25,8 @@ async function register ({ videoCategoryManager }) {
   }
 }
 
-module.exports = { register }
+async function unregister () {
+  return
+}
+
+module.exports = { register, unregister }

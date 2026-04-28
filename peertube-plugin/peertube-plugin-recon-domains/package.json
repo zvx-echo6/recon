@@ -16,5 +16,6 @@
   "staticDirs": {},
   "css": [],
   "clientScripts": [],
-  "translations": {}
+  "translations": {},
+  "bugs": "https://forge.echo6.co/matt/recon/issues"
 }
