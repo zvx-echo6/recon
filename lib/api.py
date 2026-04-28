@@ -88,6 +88,7 @@ KNOWLEDGE_SUBNAV = [
 PEERTUBE_SUBNAV = [
     {'href': '/peertube', 'label': 'Dashboard'},
     {'href': '/peertube/channels', 'label': 'Channels'},
+    {'href': '/peertube/review', 'label': 'Review'},
 ]
 
 
@@ -374,6 +375,103 @@ def peertube_dashboard():
 def peertube_channels():
     return render_template('peertube/channels.html',
                            domain='peertube', subnav=PEERTUBE_SUBNAV, active_page='/peertube/channels')
+
+
+@app.route('/peertube/review')
+def peertube_review():
+    from .recon_domains import VALID_DOMAINS
+    return render_template('peertube/review.html',
+                           domain='peertube', subnav=PEERTUBE_SUBNAV,
+                           active_page='/peertube/review',
+                           valid_domains=sorted(VALID_DOMAINS))
+
+
+@app.route('/api/peertube/review/stats')
+def api_peertube_review_stats():
+    db = StatusDB()
+    counts = db.get_domain_status_counts()
+    return jsonify(counts)
+
+
+@app.route('/api/peertube/review/items')
+def api_peertube_review_items():
+    import json as _json
+    from .recon_domains import VALID_DOMAINS
+    db = StatusDB()
+    config = get_config()
+    items = db.get_items_by_domain_status('tied_manual', limit=200)
+
+    result = []
+    concepts_dir = config['paths']['concepts']
+    for item in items:
+        file_hash = item['hash']
+        # Count domains from concept files
+        top_domains = []
+        doc_concepts_dir = os.path.join(concepts_dir, file_hash)
+        if os.path.isdir(doc_concepts_dir):
+            from collections import Counter
+            domain_counter = Counter()
+            for fname in os.listdir(doc_concepts_dir):
+                if not fname.startswith('window_') or not fname.endswith('.json'):
+                    continue
+                try:
+                    with open(os.path.join(doc_concepts_dir, fname)) as f:
+                        concepts = _json.load(f)
+                    for c in concepts:
+                        if isinstance(c, dict):
+                            dom = c.get('domain')
+                            if isinstance(dom, str) and dom in VALID_DOMAINS:
+                                domain_counter[dom] += 1
+                except Exception:
+                    continue
+            top_domains = [{'domain': d, 'count': cnt}
+                           for d, cnt in domain_counter.most_common(5)]
+
+        result.append({
+            'hash': file_hash,
+            'filename': item.get('filename', ''),
+            'category': item.get('category', ''),
+            'recon_domain': item.get('recon_domain'),
+            'recon_domain_status': item.get('recon_domain_status'),
+            'top_domains': top_domains,
+        })
+    return jsonify(result)
+
+
+@app.route('/api/peertube/review/assign', methods=['POST'])
+def api_peertube_review_assign():
+    from .recon_domains import VALID_DOMAINS, DOMAIN_CATEGORY_MAP
+    from .peertube_writer import push_category, extract_uuid
+    data = request.get_json()
+    file_hash = data.get('hash')
+    domain = data.get('domain')
+
+    if not file_hash or not domain:
+        return jsonify({'ok': False, 'error': 'Missing hash or domain'}), 400
+    if domain not in VALID_DOMAINS:
+        return jsonify({'ok': False, 'error': f'Invalid domain: {domain}'}), 400
+
+    db = StatusDB()
+    config = get_config()
+
+    db.set_domain_assignment(file_hash, domain, 'manual_assigned')
+
+    # Push to PeerTube
+    conn = db._get_conn()
+    cat_row = conn.execute(
+        "SELECT path FROM catalogue WHERE hash = ?", (file_hash,)
+    ).fetchone()
+    if cat_row:
+        uuid = extract_uuid(dict(cat_row)['path'])
+        if uuid:
+            cat_id = DOMAIN_CATEGORY_MAP[domain]
+            try:
+                push_category(uuid, cat_id, config)
+                db.set_peertube_pushed(file_hash)
+            except Exception as e:
+                return jsonify({'ok': True, 'warning': f'Assigned but PeerTube push failed: {e}'})
+
+    return jsonify({'ok': True, 'domain': domain})
 
 
 @app.route('/settings/keys')

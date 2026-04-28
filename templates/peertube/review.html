@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="pt-review">
+    <div class="stat-grid" style="grid-template-columns:repeat(4, 1fr);">
+        <div class="stat-card"><div class="label">Manual Review</div><div class="value" id="rv-manual">—</div></div>
+        <div class="stat-card"><div class="label">Assigned</div><div class="value" id="rv-assigned">—</div></div>
+        <div class="stat-card"><div class="label">Tied (Pass 1)</div><div class="value" id="rv-tied1">—</div></div>
+        <div class="stat-card"><div class="label">Needs Reprocess</div><div class="value" id="rv-reprocess">—</div></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+        <h3 class="section-title" style="margin-bottom:12px;">Manual Review Queue</h3>
+        <div id="rv-items-container">
+            <table class="data-table" id="rv-table" style="display:none;">
+                <thead>
+                    <tr>
+                        <th>Video</th>
+                        <th>Channel</th>
+                        <th>Current Domain</th>
+                        <th>Top Domains</th>
+                        <th>Assign</th>
+                    </tr>
+                </thead>
+                <tbody id="rv-tbody"></tbody>
+            </table>
+            <div id="rv-empty" class="text-muted" style="padding:24px;text-align:center;">Loading...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const VALID_DOMAINS = {{ valid_domains | tojson }};
+
+async function loadStats() {
+    try {
+        const resp = await fetch('/api/peertube/review/stats');
+        const data = await resp.json();
+        document.getElementById('rv-manual').textContent = data.tied_manual || 0;
+        document.getElementById('rv-assigned').textContent =
+            (data.assigned || 0) + (data.tied_pass_2 || 0) + (data.manual_assigned || 0);
+        document.getElementById('rv-tied1').textContent = data.tied_pass_1 || 0;
+        document.getElementById('rv-reprocess').textContent = data.needs_reprocess || 0;
+    } catch (e) {
+        console.error('Failed to load stats:', e);
+    }
+}
+
+async function loadItems() {
+    try {
+        const resp = await fetch('/api/peertube/review/items');
+        const items = await resp.json();
+        const tbody = document.getElementById('rv-tbody');
+        const table = document.getElementById('rv-table');
+        const empty = document.getElementById('rv-empty');
+
+        if (!items.length) {
+            empty.textContent = 'No items pending manual review.';
+            table.style.display = 'none';
+            return;
+        }
+
+        tbody.innerHTML = '';
+        table.style.display = '';
+        empty.style.display = 'none';
+
+        items.forEach(item => {
+            const tr = document.createElement('tr');
+            tr.id = 'row-' + item.hash;
+
+            // Video title/filename
+            const tdVideo = document.createElement('td');
+            tdVideo.textContent = item.filename || item.hash.slice(0, 12);
+            tdVideo.title = item.hash;
+            tr.appendChild(tdVideo);
+
+            // Channel
+            const tdChannel = document.createElement('td');
+            tdChannel.textContent = item.category || '—';
+            tr.appendChild(tdChannel);
+
+            // Current domain
+            const tdCurrent = document.createElement('td');
+            tdCurrent.textContent = item.recon_domain || '—';
+            tr.appendChild(tdCurrent);
+
+            // Top domains (from concept counts)
+            const tdTop = document.createElement('td');
+            if (item.top_domains) {
+                tdTop.innerHTML = item.top_domains.map(d =>
+                    '<span class="badge">' + d.domain + ' (' + d.count + ')</span>'
+                ).join(' ');
+            }
+            tr.appendChild(tdTop);
+
+            // Assign dropdown + button
+            const tdAssign = document.createElement('td');
+            const sel = document.createElement('select');
+            sel.className = 'input-sm';
+            sel.innerHTML = '<option value="">Select...</option>' +
+                VALID_DOMAINS.map(d => '<option value="' + d + '">' + d + '</option>').join('');
+            if (item.recon_domain) {
+                sel.value = item.recon_domain;
+            }
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-sm btn-primary';
+            btn.textContent = 'Assign';
+            btn.onclick = () => assignDomain(item.hash, sel.value, tr);
+            tdAssign.appendChild(sel);
+            tdAssign.appendChild(btn);
+            tr.appendChild(tdAssign);
+
+            tbody.appendChild(tr);
+        });
+    } catch (e) {
+        document.getElementById('rv-empty').textContent = 'Error loading items: ' + e.message;
+    }
+}
+
+async function assignDomain(hash, domain, row) {
+    if (!domain) {
+        alert('Select a domain first');
+        return;
+    }
+    try {
+        const resp = await fetch('/api/peertube/review/assign', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({hash: hash, domain: domain})
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            row.style.opacity = '0.4';
+            row.querySelector('button').disabled = true;
+            row.querySelector('button').textContent = 'Done';
+            loadStats();
+        } else {
+            alert('Assignment failed: ' + (result.error || 'unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+loadStats();
+loadItems();
+</script>
+{% endblock %}
