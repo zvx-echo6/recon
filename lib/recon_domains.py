@@ -32,3 +32,15 @@ DOMAIN_CATEGORY_MAP = {
 VALID_DOMAINS = set(DOMAIN_CATEGORY_MAP.keys())
 
 CATEGORY_DOMAIN_MAP = {v: k for k, v in DOMAIN_CATEGORY_MAP.items()}
+
+# Channels whose tiebreaker is skipped because their content is non-topical
+# (catch-alls, miscellany dumps, etc.). Items in these channels with tied
+# domain counts go straight to tied_manual without channel-context tiebreaker.
+#
+# This is intentionally a hardcoded explicit list, not a size threshold.
+# Adding a channel here requires an explicit decision — only add channels
+# that are genuinely non-topical catch-alls where channel-wide concept
+# aggregation would produce meaningless noise.
+MEGA_CHANNEL_SKIP_LIST = {
+    'Transcript',  # Legacy catch-all, ~9,200 videos, no topical coherence
+}

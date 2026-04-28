@@ -30,15 +30,20 @@ For each `tied_pass_1` document:
 
 1. Identify the tied domains from Qdrant
 2. Look up the document's channel (`catalogue.category`)
-3. **Mega-channel rule:** If channel has >500 videos, skip tiebreaking → `tied_manual`
+3. **Skip-list check:** If channel is in `MEGA_CHANNEL_SKIP_LIST` (known non-topical catch-alls), skip tiebreaking → `tied_manual`
 4. Query Qdrant for domain counts across all other videos in the same channel (single batch query with `MatchAny` filter)
 5. Among the tied domains only, pick the one with the highest channel-wide concept count
 6. If resolved → `tied_pass_2`
 7. If still tied → `tied_manual` (alphabetical fallback assigned, flagged for review)
 
-### Mega-Channel Rule
+### Channel Skip List
 
-Channels with >500 videos (like the "Transcript" catch-all with ~9,200 videos) are not topically coherent. Scanning their concepts produces meaningless aggregate data. These go straight to `tied_manual` for dashboard review.
+Certain channels are known non-topical catch-alls where channel-wide concept aggregation produces meaningless noise. These are listed explicitly in `MEGA_CHANNEL_SKIP_LIST` (defined in `lib/recon_domains.py`) and skip tiebreaking entirely — their tied items go straight to `tied_manual` for dashboard review.
+
+Current skip list:
+- `Transcript` — Legacy catch-all (~9,200 videos), no topical coherence
+
+This is intentionally an explicit list, not a size threshold. Legitimate large channels (e.g., 1a-auto, forgotten-weapons) run the tiebreaker normally because their content is topically coherent. Adding a channel to the skip list requires a code change and a documented reason.
 
 ## Status Values
 

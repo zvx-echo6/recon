@@ -25,13 +25,11 @@ from collections import Counter
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 
-from .recon_domains import VALID_DOMAINS, DOMAIN_CATEGORY_MAP
+from .recon_domains import VALID_DOMAINS, DOMAIN_CATEGORY_MAP, MEGA_CHANNEL_SKIP_LIST
 from .utils import setup_logging
 
 logger = setup_logging('recon.domain_assigner')
 
-# Channels with more than this many videos skip channel tiebreaking entirely
-MEGA_CHANNEL_THRESHOLD = 500
 
 
 def _get_qdrant_client(config):
@@ -222,14 +220,6 @@ def _channel_video_hashes(db, channel_name, exclude_hash=None):
     return hashes
 
 
-def _channel_video_count(db, channel_name):
-    """Count total videos in a channel."""
-    conn = db._get_conn()
-    row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM catalogue WHERE category = ? AND source = 'stream.echo6.co'",
-        (channel_name,)
-    ).fetchone()
-    return row['cnt'] if row else 0
 
 
 def run_tiebreaker_pass(db, config, qdrant=None):
@@ -241,8 +231,8 @@ def run_tiebreaker_pass(db, config, qdrant=None):
     other videos in the same channel and picks the tied domain with the
     highest channel-wide count.
 
-    Mega-channels (>500 videos) skip tiebreaking and go straight to
-    'tied_manual' for dashboard review.
+    Channels in MEGA_CHANNEL_SKIP_LIST (known non-topical catch-alls) skip
+    tiebreaking and go straight to 'tied_manual' for dashboard review.
 
     Args:
         db: StatusDB instance
@@ -263,9 +253,6 @@ def run_tiebreaker_pass(db, config, qdrant=None):
     stats = {'resolved': 0, 'manual': 0, 'skipped': 0, 'errors': 0, 'total': len(tied_items)}
     logger.info(f"Tiebreaker pass: {len(tied_items)} items to resolve")
 
-    # Cache channel sizes to avoid repeated queries
-    channel_size_cache = {}
-
     for item in tied_items:
         file_hash = item['hash']
         channel = item.get('category', '')
@@ -283,16 +270,12 @@ def run_tiebreaker_pass(db, config, qdrant=None):
                 stats['resolved'] += 1
                 continue
 
-            # Check mega-channel rule
-            if channel not in channel_size_cache:
-                channel_size_cache[channel] = _channel_video_count(db, channel)
-
-            if channel_size_cache[channel] > MEGA_CHANNEL_THRESHOLD:
+            # Skip-list check: known non-topical catch-all channels
+            if channel in MEGA_CHANNEL_SKIP_LIST:
                 fallback = sorted(tied_domains)[0]
                 db.set_domain_assignment(file_hash, fallback, 'tied_manual')
                 stats['manual'] += 1
-                logger.debug(f"  {file_hash[:12]}: mega-channel '{channel}' "
-                             f"({channel_size_cache[channel]} videos), → tied_manual")
+                logger.debug(f"  {file_hash[:12]}: skip-list channel '{channel}' → tied_manual")
                 continue
 
             # Channel tiebreaker: count domains across all other videos in channel
