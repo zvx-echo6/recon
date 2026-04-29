@@ -364,6 +364,15 @@ def _enrich_with_wiki_index(result):
     state = address.get('state', '')
     country_code = address.get('country_code', '')
 
+    # Handle boundary/administrative - get actual place type from extratags
+    # (e.g. boundary:administrative with extratags.place='city' -> place:city)
+    extratags = result.get('extratags', {})
+    if osm_class == 'boundary' and osm_type_tag == 'administrative':
+        place_tag = extratags.get('place') or extratags.get('linked_place')
+        if place_tag:
+            osm_class = 'place'
+            osm_type_tag = place_tag
+
     if not name or not osm_class or not osm_type_tag:
         return result
 
@@ -503,6 +512,8 @@ def _parse_nominatim(data):
         'wheelchair': raw_extra.get('wheelchair'),
         'fee': raw_extra.get('fee'),
         'takeaway': raw_extra.get('takeaway'),
+        'place': raw_extra.get('place'),
+        'linked_place': raw_extra.get('linked_place'),
     }
 
     # Category: use extratags.place for boundaries (e.g. "city"), else class/type
