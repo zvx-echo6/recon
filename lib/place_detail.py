@@ -290,6 +290,11 @@ def _enrich_wiki_links(result):
     """
     Rewrite wiki-related extratags to local Kiwix URLs where available.
     Falls back to public URLs. Only runs when has_wiki_rewriting is enabled.
+    
+    Note: When has_kiwix_wiki is enabled, we skip rewriting 'wikipedia' since
+    the wiki_index enrichment provides a proper wiki_url field. This keeps
+    extratags.wikipedia in the original OSM format for frontend link builders.
+    
     Returns the (possibly enriched) result dict.
     """
     try:
@@ -298,6 +303,8 @@ def _enrich_wiki_links(result):
         features = deploy_config.get('features', {})
         if not features.get('has_wiki_rewriting', False):
             return result
+        # When has_kiwix_wiki is enabled, skip wikipedia rewriting (wiki_url handles it)
+        has_kiwix_wiki = features.get('has_kiwix_wiki', False)
     except Exception:
         return result
 
@@ -313,6 +320,9 @@ def _enrich_wiki_links(result):
 
     rewrites = {}
     for tag in _WIKI_TAGS:
+        # Skip wikipedia when has_kiwix_wiki is enabled (wiki_url provides the local link)
+        if tag == 'wikipedia' and has_kiwix_wiki:
+            continue
         value = extratags.get(tag)
         if not value:
             continue
