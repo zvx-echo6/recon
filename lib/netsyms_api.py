@@ -15,6 +15,66 @@ from .utils import setup_logging
 
 logger = setup_logging('recon.netsyms_api')
 
+
+def _enrich_reverse_result_with_wiki(result):
+    """
+    Add wiki data to a reverse geocode result if available.
+    Only runs when has_kiwix_wiki is enabled.
+    """
+    try:
+        from .deployment_config import get_deployment_config
+        deploy_config = get_deployment_config()
+        features = deploy_config.get('features', {})
+        if not features.get('has_kiwix_wiki', False):
+            return result
+    except Exception:
+        return result
+
+    try:
+        from . import wiki_index
+    except ImportError:
+        return result
+
+    if not wiki_index.is_available():
+        return result
+
+    # Extract match criteria from Photon raw props
+    raw = result.get('raw', {})
+    place_name = raw.get('name', '')
+    osm_key = raw.get('osm_key', '')
+    osm_value = raw.get('osm_value', '')
+    state = raw.get('state', '')
+    country = raw.get('country', '')
+
+    # Extract country code (Photon uses full country name, we need code)
+    country_code = raw.get('countrycode', '').lower()
+    if not country_code:
+        country_lower = country.lower() if country else ''
+        if 'united states' in country_lower or country_lower == 'usa':
+            country_code = 'us'
+        elif 'canada' in country_lower:
+            country_code = 'ca'
+
+    if not place_name or not osm_key or not osm_value or not country_code:
+        return result
+
+    # Look up wiki data
+    wiki_data = wiki_index.lookup_wiki(place_name, osm_key, osm_value, state, country_code)
+    if wiki_data:
+        # Add wiki fields to result (additive only)
+        if 'wiki_summary' in wiki_data:
+            result['wiki_summary'] = wiki_data['wiki_summary']
+        if 'wiki_url' in wiki_data:
+            result['wiki_url'] = wiki_data['wiki_url']
+        if 'wikivoyage_url' in wiki_data:
+            result['wikivoyage_url'] = wiki_data['wikivoyage_url']
+        if 'wiki_population' in wiki_data:
+            result['wiki_population'] = wiki_data['wiki_population']
+
+    return result
+
+
+
 netsyms_bp = Blueprint('netsyms', __name__)
 geocode_bp = Blueprint('geocode', __name__)
 
@@ -122,5 +182,8 @@ def api_reverse():
 
     from .geocode import _parse_photon_features
     results = _parse_photon_features(features, source='photon_reverse')
+
+    # Enrich results with wiki data
+    results = [_enrich_reverse_result_with_wiki(r) for r in results]
 
     return jsonify({'query': query_str, 'results': results, 'count': len(results)})

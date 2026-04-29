@@ -328,6 +328,65 @@ def _enrich_wiki_links(result):
 
     return result
 
+
+
+# ── Wiki Index enrichment ───────────────────────────────────────────────
+
+def _enrich_with_wiki_index(result):
+    """
+    Add wiki summary, URLs, and population from wiki_index.db.
+    Only runs when has_kiwix_wiki is enabled. Direct match only.
+    Returns the (possibly enriched) result dict.
+    """
+    try:
+        from .deployment_config import get_deployment_config
+        deploy_config = get_deployment_config()
+        features = deploy_config.get('features', {})
+        if not features.get('has_kiwix_wiki', False):
+            return result
+    except Exception:
+        return result
+
+    try:
+        from . import wiki_index
+    except ImportError:
+        logger.debug("wiki_index module not available")
+        return result
+
+    if not wiki_index.is_available():
+        return result
+
+    # Extract match criteria from result
+    name = result.get('name', '')
+    osm_class = result.get('class', '')
+    osm_type_tag = result.get('type', '')
+    address = result.get('address', {})
+    state = address.get('state', '')
+    country_code = address.get('country_code', '')
+
+    if not name or not osm_class or not osm_type_tag:
+        return result
+
+    # Look up wiki data
+    wiki_data = wiki_index.lookup_wiki(name, osm_class, osm_type_tag, state, country_code)
+    if not wiki_data:
+        return result
+
+    # Add wiki fields to result (additive only)
+    if 'wiki_summary' in wiki_data:
+        result['wiki_summary'] = wiki_data['wiki_summary']
+    if 'wiki_url' in wiki_data:
+        result['wiki_url'] = wiki_data['wiki_url']
+    if 'wikivoyage_url' in wiki_data:
+        result['wikivoyage_url'] = wiki_data['wikivoyage_url']
+    if 'wiki_population' in wiki_data:
+        result['wiki_population'] = wiki_data['wiki_population']
+
+    result.setdefault('sources', {})['wiki_index'] = True
+    logger.debug(f"Wiki index enrichment for {name}")
+
+    return result
+
 # ── Nominatim parsing ───────────────────────────────────────────────────
 
 # Nominatim address array uses rank_address to indicate what each entry is.
@@ -625,6 +684,7 @@ def get_place_detail(osm_type, osm_id):
         nominatim_result = _enrich_with_overture(nominatim_result, osm_type, osm_id)
         nominatim_result = _enrich_with_google(nominatim_result, osm_type, osm_id)
         nominatim_result = _enrich_wiki_links(nominatim_result)
+        nominatim_result = _enrich_with_wiki_index(nominatim_result)
         cache_put(osm_type, osm_id, nominatim_result, 'nominatim_local')
         return nominatim_result, 200
 
@@ -658,6 +718,7 @@ def get_place_detail(osm_type, osm_id):
         overpass_result = _enrich_with_overture(overpass_result, osm_type, osm_id)
         overpass_result = _enrich_with_google(overpass_result, osm_type, osm_id)
         overpass_result = _enrich_wiki_links(overpass_result)
+        overpass_result = _enrich_with_wiki_index(overpass_result)
         cache_put(osm_type, osm_id, overpass_result, 'overpass')
         return overpass_result, 200
 
