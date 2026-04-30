@@ -47,6 +47,18 @@ def _get_db():
         )
     """)
     _db_conn.commit()
+    # Schema migration: add Google columns to place_cache if missing
+    for col, coldef in [
+        ('google_place_id', 'TEXT'),
+        ('google_data', 'TEXT'),
+        ('google_fetched_at', 'INTEGER'),
+    ]:
+        try:
+            _db_conn.execute(f'ALTER TABLE place_cache ADD COLUMN {col} {coldef}')
+            logger.info(f'Added column {col} to place_cache')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    _db_conn.commit()
     return _db_conn
 
 
