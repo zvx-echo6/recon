@@ -52,13 +52,13 @@ def _get_db():
 
 def lookup_wiki(place_name, osm_key, osm_value, state, country_code):
     """
-    Look up wiki data for a place by exact match.
+    Look up wiki data for a place by name and country, with optional state.
 
     Args:
         place_name: Name of the place (e.g., "Twin Falls")
-        osm_key: OSM key (e.g., "place", "natural", "waterway")
-        osm_value: OSM value (e.g., "city", "peak", "river")
-        state: State/province name (may be None)
+        osm_key: OSM key (unused, kept for API compatibility)
+        osm_value: OSM value (unused, kept for API compatibility)
+        state: State/province name (may be None or empty)
         country_code: ISO country code (e.g., "us", "ca")
 
     Returns:
@@ -71,33 +71,51 @@ def lookup_wiki(place_name, osm_key, osm_value, state, country_code):
 
     # Normalize inputs
     place_name = (place_name or '').strip()
-    osm_key = (osm_key or '').strip().lower()
-    osm_value = (osm_value or '').strip().lower()
-    state = (state or '').strip()
+    state = (state or '').strip() if state else ''
     country_code = (country_code or '').strip().lower()
 
-    if not place_name or not osm_key or not osm_value or not country_code:
+    if not place_name or not country_code:
         return None
 
     try:
-        # Direct match query
-        row = db.execute("""
-            SELECT
-                summary,
-                wikipedia_title,
-                wikivoyage_title,
-                wikipedia_exists,
-                wikivoyage_exists,
-                wiki_population
-            FROM wiki_places
-            WHERE place_name = ?
-              AND osm_key = ?
-              AND osm_value = ?
-              AND COALESCE(state, '') = ?
-              AND country_code = ?
-              AND wikipedia_exists = 1
-            LIMIT 1
-        """, (place_name, osm_key, osm_value, state, country_code)).fetchone()
+        row = None
+        
+        # Try exact match with state first (if state provided)
+        if state:
+            row = db.execute("""
+                SELECT
+                    summary,
+                    wikipedia_title,
+                    wikivoyage_title,
+                    wikipedia_exists,
+                    wikivoyage_exists,
+                    wiki_population
+                FROM wiki_places
+                WHERE place_name = ?
+                  AND state = ?
+                  AND country_code = ?
+                  AND summary IS NOT NULL
+                ORDER BY importance DESC
+                LIMIT 1
+            """, (place_name, state, country_code)).fetchone()
+        
+        # Fall back to name + country only (for places without state in query)
+        if not row:
+            row = db.execute("""
+                SELECT
+                    summary,
+                    wikipedia_title,
+                    wikivoyage_title,
+                    wikipedia_exists,
+                    wikivoyage_exists,
+                    wiki_population
+                FROM wiki_places
+                WHERE place_name = ?
+                  AND country_code = ?
+                  AND summary IS NOT NULL
+                ORDER BY importance DESC
+                LIMIT 1
+            """, (place_name, country_code)).fetchone()
 
         if not row:
             return None

@@ -22,6 +22,41 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 OVERPASS_UA = "Navi/1.0 (forge.echo6.co/matt/recon)"
 VALID_OSM_TYPES = {"N", "W", "R"}
 
+# US states and Canadian provinces for wikipedia title parsing
+US_STATES = {
+    'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
+    'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
+    'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana',
+    'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota',
+    'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada',
+    'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
+    'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon',
+    'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota',
+    'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
+    'West Virginia', 'Wisconsin', 'Wyoming', 'District of Columbia'
+}
+
+CANADIAN_PROVINCES = {
+    'Alberta', 'British Columbia', 'Manitoba', 'New Brunswick',
+    'Newfoundland and Labrador', 'Northwest Territories', 'Nova Scotia',
+    'Nunavut', 'Ontario', 'Prince Edward Island', 'Quebec', 'Saskatchewan', 'Yukon'
+}
+
+
+def _parse_state_from_wikipedia(wikipedia_tag):
+    """Parse state/province and country from wikipedia extratag like 'en:Joliet, Illinois'"""
+    if not wikipedia_tag or not wikipedia_tag.startswith('en:'):
+        return None, None
+    title = wikipedia_tag[3:]
+    for state in US_STATES:
+        if state in title:
+            return state, 'us'
+    for prov in CANADIAN_PROVINCES:
+        if prov in title:
+            return prov, 'ca'
+    return None, None
+
+
 _db_conn = None
 
 
@@ -373,10 +408,18 @@ def _enrich_with_wiki_index(result):
     address = result.get('address', {})
     state = address.get('state', '')
     country_code = address.get('country_code', '')
+    
+    # If state/country missing, try to derive from wikipedia extratag
+    extratags = result.get('extratags', {})
+    if (not state or not country_code) and extratags.get('wikipedia'):
+        derived_state, derived_country = _parse_state_from_wikipedia(extratags['wikipedia'])
+        if not state and derived_state:
+            state = derived_state
+        if not country_code and derived_country:
+            country_code = derived_country
 
     # Handle boundary/administrative - get actual place type from extratags
     # (e.g. boundary:administrative with extratags.place='city' -> place:city)
-    extratags = result.get('extratags', {})
     if osm_class == 'boundary' and osm_type_tag == 'administrative':
         place_tag = extratags.get('place') or extratags.get('linked_place')
         if place_tag:
@@ -673,6 +716,7 @@ def get_place_detail(osm_type, osm_id):
     # 1. Check cache
     cached = cache_get(osm_type, osm_id)
     if cached:
+        cached = _enrich_with_wiki_index(cached)
         logger.debug(f"Cache hit: {osm_type}/{osm_id}")
         return cached, 200
 
