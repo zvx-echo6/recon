@@ -77,10 +77,73 @@ def _text_hash(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 
+def _flatten_table(table_el):
+    """Convert a <table> element to pipe-delimited text.
+
+    Each <tr> becomes a row with cells joined by ' | '.
+    Returns the formatted table as a string with blank lines around it.
+    """
+    rows = []
+    for tr in table_el.iter('tr'):
+        cells = []
+        for cell in tr:
+            if cell.tag in ('td', 'th'):
+                cell_text = (cell.text_content() or '').strip()
+                # Collapse internal whitespace in each cell
+                cell_text = re.sub(r'\s+', ' ', cell_text)
+                if cell_text:
+                    cells.append(cell_text)
+        if cells:
+            rows.append(' | '.join(cells))
+    if not rows:
+        return ''
+    return '\n'.join(rows)
+
+
+def _preprocess_tree(doc):
+    """Pre-process HTML tree to add delimiters before text_content() flattens it.
+
+    Handles: <table>, <br>, <li>, <dt>, <dd> -- elements that lxml's
+    text_content() would concatenate without any separators.
+    """
+    from lxml import etree
+
+    # 1. Replace <table> elements with their pipe-delimited text
+    for table in list(doc.iter('table')):
+        formatted = _flatten_table(table)
+        if formatted:
+            replacement = etree.Element('div')
+            replacement.text = '\n\n' + formatted + '\n\n'
+            parent = table.getparent()
+            if parent is not None:
+                parent.replace(table, replacement)
+        else:
+            table.drop_tree()
+
+    # 2. <br> -> inject newline
+    for br in list(doc.iter('br')):
+        br.tail = '\n' + (br.tail or '')
+
+    # 3. <li> -> inject newline + "- " prefix
+    for li in list(doc.iter('li')):
+        li.text = '- ' + (li.text or '')
+        li.tail = '\n' + (li.tail or '')
+
+    # 4. <dt> -> inject newline before
+    for dt in list(doc.iter('dt')):
+        dt.tail = '\n' + (dt.tail or '')
+
+    # 5. <dd> -> inject newline + indent
+    for dd in list(doc.iter('dd')):
+        dd.text = '  ' + (dd.text or '')
+        dd.tail = '\n' + (dd.tail or '')
+
+
 def _html_to_text(html_bytes):
     """Convert HTML bytes to clean text via lxml.
 
     Strips nav, footer, script, style elements. Decodes entities.
+    Pre-processes tables, lists, and line breaks for proper delimiters.
     Normalizes whitespace.
     """
     try:
@@ -92,6 +155,9 @@ def _html_to_text(html_bytes):
     for tag in STRIP_TAGS:
         for el in doc.iter(tag):
             el.drop_tree()
+
+    # Pre-process tree: tables -> pipe-delimited, br -> newlines, li -> dashes
+    _preprocess_tree(doc)
 
     # Extract text
     text = doc.text_content()
