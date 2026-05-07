@@ -21,6 +21,7 @@ Config: processing.extract_workers, processing.max_pdf_size_mb,
         processing.extract_timeout, processing.page_timeout
 """
 import base64
+import re
 import json
 import os
 import random
@@ -97,6 +98,40 @@ def _is_transient(error_str):
                          '500', '503', 'unavailable', 'timeout',
                          'connection', 'reset by peer', 'broken pipe']
     return any(sig in s for sig in transient_signals)
+
+
+def _text_quality_ok(text, min_length=50):
+    """Check if extracted text meets quality thresholds.
+
+    Beyond the basic length check, validates:
+    - Word-boundary ratio: at least 60% of tokens should be real words (2+ alpha chars)
+    - Concatenation ratio: lowercase-immediately-followed-by-uppercase shouldn't exceed 10% of word count
+
+    Returns True if text passes all checks.
+    """
+    text = text.strip()
+    if len(text) < min_length:
+        return False
+
+    words = text.split()
+    if not words:
+        return False
+
+    # Word-like ratio: tokens with 2+ alphabetic characters
+    word_like = sum(1 for w in words if len(re.findall(r'[a-zA-Z]', w)) >= 2)
+    word_ratio = word_like / len(words)
+    if word_ratio < 0.60:
+        return False
+
+    # Concatenation detector: lowercase immediately followed by uppercase
+    # Filter out common camelCase patterns in code (short tokens)
+    concat_hits = len(re.findall(r'[a-z][A-Z]', text))
+    concat_ratio = concat_hits / len(words) if words else 0
+    if concat_ratio > 0.10:
+        return False
+
+    return True
+
 
 
 def _render_page_to_png(pdf_path, page_num_1indexed, dpi=200, timeout=30):
@@ -224,7 +259,7 @@ def _extract_page_without_reader(pdf_path, page_num_0indexed, page_timeout=30):
     # Method 1: pdftotext (poppler)
     try:
         result = subprocess.run(
-            ['pdftotext', '-f', str(page_num_0indexed + 1),
+            ['pdftotext', '-layout', '-f', str(page_num_0indexed + 1),
              '-l', str(page_num_0indexed + 1), pdf_path, '-'],
             capture_output=True, text=True, timeout=page_timeout
         )
@@ -233,7 +268,7 @@ def _extract_page_without_reader(pdf_path, page_num_0indexed, page_timeout=30):
     except Exception:
         pass
 
-    if len(text.strip()) >= 50:
+    if _text_quality_ok(text):
         return text, 'pdftotext'
 
     # Method 2: pdftoppm + Tesseract OCR
@@ -258,7 +293,7 @@ def _extract_page_without_reader(pdf_path, page_num_0indexed, page_timeout=30):
     except Exception:
         pass
 
-    if len(text.strip()) >= 50:
+    if _text_quality_ok(text):
         return text, 'tesseract'
 
     # Method 3: Gemini Vision (last resort)
@@ -276,8 +311,26 @@ def _extract_page_without_reader(pdf_path, page_num_0indexed, page_timeout=30):
 # ── Core extraction functions ──
 
 def _pypdf2_extract(reader, page_num):
-    """Extract text from a PyPDF2 page object. Runs inside a thread for timeout."""
-    return reader.pages[page_num].extract_text() or ''
+    """Extract text from a PyPDF2 page object. Runs inside a thread for timeout.
+
+    Tries default extraction first (space_width=200). If quality check fails,
+    retries with space_width=100 which better detects word boundaries in
+    tightly-kerned PDFs (common in Haynes/workshop manuals).
+
+    Note: PyPDF2 3.0.1 does not support layout=True. The space_width parameter
+    controls word-boundary detection tolerance. Lower values = more aggressive
+    space insertion between characters.
+    """
+    text = reader.pages[page_num].extract_text() or ''
+    if _text_quality_ok(text):
+        return text
+
+    # Retry with tighter word-boundary detection
+    text_tight = reader.pages[page_num].extract_text(space_width=100.0) or ''
+    if len(text_tight.strip()) >= len(text.strip()):
+        return text_tight
+
+    return text
 
 
 def extract_text_from_page(reader, page_num, pdf_path, page_timeout=30):
@@ -302,13 +355,13 @@ def extract_text_from_page(reader, page_num, pdf_path, page_timeout=30):
     except Exception:
         text = ''
 
-    if len(text.strip()) >= 50:
+    if _text_quality_ok(text):
         return text, 'pypdf2'
 
     # Method 2: pdftotext via subprocess (inherently timeout-safe)
     try:
         result = subprocess.run(
-            ['pdftotext', '-f', str(page_num + 1), '-l', str(page_num + 1), pdf_path, '-'],
+            ['pdftotext', '-layout', '-f', str(page_num + 1), '-l', str(page_num + 1), pdf_path, '-'],
             capture_output=True, text=True, timeout=page_timeout
         )
         if result.returncode == 0 and len(result.stdout.strip()) > len(text.strip()):
@@ -316,7 +369,7 @@ def extract_text_from_page(reader, page_num, pdf_path, page_timeout=30):
     except Exception:
         pass
 
-    if len(text.strip()) >= 50:
+    if _text_quality_ok(text):
         return text, 'pdftotext'
 
     # Method 3: pdftoppm + Tesseract OCR
@@ -340,7 +393,7 @@ def extract_text_from_page(reader, page_num, pdf_path, page_timeout=30):
     except Exception:
         pass
 
-    if len(text.strip()) >= 50:
+    if _text_quality_ok(text):
         return text, 'tesseract'
 
     # Method 4: Gemini Vision (last resort — costs API calls but handles scanned docs)
