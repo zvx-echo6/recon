@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-OFFROUTE Phase O2b Prototype
+OFFROUTE Phase O2c Prototype
 
-Validates the PMTiles decoder, Tobler cost function, WorldCover friction
-integration, and MCP pathfinder on a real Idaho bounding box.
+Validates the PMTiles decoder, Tobler cost function, WorldCover friction,
+PAD-US barriers integration, and MCP pathfinder on a real Idaho bounding box.
 
-Now includes friction layer to avoid water bodies like Murtaugh Lake.
+Runs THREE pathfinding passes with different boundary modes:
+  1. boundary_mode="strict"    - private land is impassable
+  2. boundary_mode="pragmatic" - private land has 5x friction penalty
+  3. boundary_mode="emergency" - private land barriers ignored
 
-Test bbox (four Idaho towns as corners):
-  SW: Rogerson, ID (~42.21, -114.60)
-  NW: Buhl, ID (~42.60, -114.76)
-  NE: Burley, ID (~42.54, -113.79)
-  SE: Oakley, ID (~42.24, -113.88)
-  Approximate bbox: south=42.21, north=42.60, west=-114.76, east=-113.79
+Outputs comparison showing impact of boundary mode on routing.
 """
 import json
 import time
@@ -28,8 +26,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.offroute.dem import DEMReader
 from lib.offroute.cost import compute_cost_grid
 from lib.offroute.friction import FrictionReader, friction_to_multiplier
+from lib.offroute.barriers import BarrierReader, DEFAULT_BARRIERS_PATH
 
-# Test bounding box
+# Test bounding box - Idaho area known to have mixed public/private land
 BBOX = {
     "south": 42.21,
     "north": 42.60,
@@ -38,26 +37,25 @@ BBOX = {
 }
 
 # Start point: wilderness area south of Twin Falls
-# (in the Sawtooth National Forest foothills)
-START_LAT = 42.35
-START_LON = -114.50
+START_LAT = 42.36
+START_LON = -114.55
 
 # End point: near Burley, ID (on road network)
-END_LAT = 42.52
-END_LON = -113.85
-
-# Murtaugh Lake - actual water extent from WorldCover
-LAKE_BOUNDS = {
-    "south": 42.44,
-    "north": 42.50,
-    "west": -114.20,
-    "east": -114.10,
-}
-LAKE_CENTER = (42.465, -114.155)  # Verified water in WorldCover
+END_LAT = 42.55
+END_LON = -114.25
 
 # Output files
-OUTPUT_PATH_O1 = Path("/opt/recon/data/offroute-test.geojson")
-OUTPUT_PATH_FRICTION = Path("/opt/recon/data/offroute-test-friction.geojson")
+OUTPUT_PATHS = {
+    "strict": Path("/opt/recon/data/offroute-test-strict.geojson"),
+    "pragmatic": Path("/opt/recon/data/offroute-test-pragmatic.geojson"),
+    "emergency": Path("/opt/recon/data/offroute-test-emergency.geojson"),
+}
+
+# Old files to delete
+OLD_FILES = [
+    Path("/opt/recon/data/offroute-test-barriers-on.geojson"),
+    Path("/opt/recon/data/offroute-test-barriers-off.geojson"),
+]
 
 # Memory limit in GB
 MEMORY_LIMIT_GB = 12
@@ -77,40 +75,139 @@ def check_memory_usage():
         return 0
 
 
-def path_crosses_lake(coordinates, lake_bounds):
-    """Check if any path coordinates fall within the lake bounding box."""
-    for lon, lat in coordinates:
-        if (lake_bounds["south"] <= lat <= lake_bounds["north"] and
-            lake_bounds["west"] <= lon <= lake_bounds["east"]):
-            return True, (lat, lon)
-    return False, None
+def run_pathfinder(
+    elevation: np.ndarray,
+    meta: dict,
+    friction_mult: np.ndarray,
+    barriers: np.ndarray,
+    boundary_mode: str,
+    start_row: int,
+    start_col: int,
+    end_row: int,
+    end_col: int,
+    dem_reader: DEMReader,
+) -> dict:
+    """
+    Run the MCP pathfinder with given parameters.
+
+    Returns dict with path info and stats.
+    """
+    # Compute cost grid
+    cost = compute_cost_grid(
+        elevation,
+        cell_size_m=meta["cell_size_m"],
+        friction=friction_mult,
+        barriers=barriers,
+        boundary_mode=boundary_mode,
+    )
+
+    # Count impassable cells
+    impassable_count = np.sum(np.isinf(cost))
+    barrier_count = np.sum(barriers == 255) if barriers is not None else 0
+
+    # Run MCP
+    mcp = MCP_Geometric(cost, fully_connected=True)
+    cumulative_costs, traceback = mcp.find_costs([(start_row, start_col)])
+
+    end_cost = cumulative_costs[end_row, end_col]
+
+    if np.isinf(end_cost):
+        return {
+            "success": False,
+            "reason": "No path found (blocked by impassable terrain)",
+            "impassable_cells": int(impassable_count),
+            "barrier_cells": int(barrier_count),
+        }
+
+    # Traceback path
+    path_indices = mcp.traceback((end_row, end_col))
+
+    # Convert to coordinates
+    coordinates = []
+    elevations = []
+    barrier_values = []
+
+    for row, col in path_indices:
+        lat, lon = dem_reader.pixel_to_latlon(row, col, meta)
+        elev = elevation[row, col]
+        barr = barriers[row, col] if barriers is not None else 0
+        coordinates.append([lon, lat])
+        elevations.append(elev)
+        barrier_values.append(barr)
+
+    # Compute distance
+    total_distance_m = 0
+    for i in range(1, len(coordinates)):
+        lon1, lat1 = coordinates[i-1]
+        lon2, lat2 = coordinates[i]
+        R = 6371000
+        dlat = np.radians(lat2 - lat1)
+        dlon = np.radians(lon2 - lon1)
+        a = np.sin(dlat/2)**2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon/2)**2
+        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
+        total_distance_m += R * c
+
+    # Elevation stats
+    elev_arr = np.array(elevations)
+    elev_diff = np.diff(elev_arr)
+    elev_gain = np.sum(elev_diff[elev_diff > 0])
+    elev_loss = np.sum(np.abs(elev_diff[elev_diff < 0]))
+
+    # Barrier crossings on path
+    barr_arr = np.array(barrier_values)
+    barrier_crossings = np.sum(barr_arr == 255)
+
+    return {
+        "success": True,
+        "coordinates": coordinates,
+        "total_time_seconds": float(end_cost),
+        "total_time_minutes": float(end_cost / 60),
+        "total_distance_m": float(total_distance_m),
+        "total_distance_km": float(total_distance_m / 1000),
+        "elevation_gain_m": float(elev_gain),
+        "elevation_loss_m": float(elev_loss),
+        "min_elevation_m": float(np.min(elev_arr)),
+        "max_elevation_m": float(np.max(elev_arr)),
+        "cell_count": len(path_indices),
+        "impassable_cells": int(impassable_count),
+        "barrier_cells": int(barrier_count),
+        "barrier_crossings": int(barrier_crossings),
+    }
 
 
 def main():
-    print("=" * 60)
-    print("OFFROUTE Phase O2b Prototype (with Friction)")
-    print("=" * 60)
+    print("=" * 80)
+    print("OFFROUTE Phase O2c Prototype (Three-Mode Boundary Respect)")
+    print("=" * 80)
 
     t0 = time.time()
+
+    # Delete old output files
+    for old_file in OLD_FILES:
+        if old_file.exists():
+            old_file.unlink()
+            print(f"Deleted old file: {old_file}")
+
+    # Check if barrier raster exists
+    if not DEFAULT_BARRIERS_PATH.exists():
+        print(f"\nERROR: Barrier raster not found at {DEFAULT_BARRIERS_PATH}")
+        print(f"Run first: python /opt/recon/lib/offroute/barriers.py build")
+        sys.exit(1)
 
     # Step 1: Load elevation data
     print(f"\n[1] Loading DEM for bbox: {BBOX}")
     dem_reader = DEMReader()
 
-    t1 = time.time()
     elevation, meta = dem_reader.get_elevation_grid(
         south=BBOX["south"],
         north=BBOX["north"],
         west=BBOX["west"],
         east=BBOX["east"],
     )
-    t2 = time.time()
 
     print(f"    Elevation grid shape: {elevation.shape}")
     print(f"    Cell count: {elevation.size:,}")
     print(f"    Cell size: {meta['cell_size_m']:.1f} m")
-    print(f"    Elevation range: {np.nanmin(elevation):.0f} - {np.nanmax(elevation):.0f} m")
-    print(f"    Load time: {t2 - t1:.1f}s")
 
     mem = check_memory_usage()
     if mem > 0:
@@ -118,19 +215,8 @@ def main():
 
     # Step 2: Load friction data
     print(f"\n[2] Loading WorldCover friction layer...")
-    t2a = time.time()
-
     friction_reader = FrictionReader()
 
-    # Validate lake is marked as impassable
-    lake_friction = friction_reader.sample_point(LAKE_CENTER[0], LAKE_CENTER[1])
-    print(f"    Murtaugh Lake center ({LAKE_CENTER[0]}, {LAKE_CENTER[1]}): friction = {lake_friction}")
-    if lake_friction != 255:
-        print(f"    WARNING: Lake not marked as water (expected 255, got {lake_friction})")
-    else:
-        print(f"    Lake correctly marked as impassable (255)")
-
-    # Load friction grid matching elevation shape
     friction_raw = friction_reader.get_friction_grid(
         south=BBOX["south"],
         north=BBOX["north"],
@@ -138,36 +224,30 @@ def main():
         east=BBOX["east"],
         target_shape=elevation.shape
     )
-    t2b = time.time()
-
-    # Convert to multipliers
     friction_mult = friction_to_multiplier(friction_raw)
 
-    impassable_count = np.sum(np.isinf(friction_mult))
     print(f"    Friction grid shape: {friction_raw.shape}")
-    print(f"    Unique friction values: {np.unique(friction_raw[friction_raw > 0])}")
-    print(f"    Impassable cells (water/nodata): {impassable_count:,} ({100*impassable_count/friction_raw.size:.1f}%)")
-    print(f"    Load time: {t2b - t2a:.1f}s")
+    print(f"    Water/impassable cells: {np.sum(np.isinf(friction_mult)):,}")
 
-    mem = check_memory_usage()
-    if mem > 0:
-        print(f"    Memory usage: {mem:.1f} GB")
+    # Step 3: Load barrier data
+    print(f"\n[3] Loading PAD-US barrier layer...")
+    barrier_reader = BarrierReader()
 
-    # Step 3: Compute cost grid with friction
-    print(f"\n[3] Computing Tobler cost grid with friction...")
-    t3 = time.time()
-    cost = compute_cost_grid(
-        elevation,
-        cell_size_m=meta["cell_size_m"],
-        friction=friction_mult
+    barriers = barrier_reader.get_barrier_grid(
+        south=BBOX["south"],
+        north=BBOX["north"],
+        west=BBOX["west"],
+        east=BBOX["east"],
+        target_shape=elevation.shape
     )
-    t4 = time.time()
 
-    finite_cost = cost[~np.isinf(cost)]
-    total_impassable = np.sum(np.isinf(cost))
-    print(f"    Cost range: {finite_cost.min():.1f} - {finite_cost.max():.1f} s/cell")
-    print(f"    Total impassable cells: {total_impassable:,} ({100*total_impassable/cost.size:.1f}%)")
-    print(f"    Compute time: {t4 - t3:.1f}s")
+    closed_cells = np.sum(barriers == 255)
+    print(f"    Barrier grid shape: {barriers.shape}")
+    print(f"    Closed/restricted cells: {closed_cells:,} ({100*closed_cells/barriers.size:.2f}%)")
+
+    if closed_cells == 0:
+        print("\n    WARNING: No closed/restricted areas in this bbox.")
+        print("    The test may not show meaningful differences between modes.")
 
     mem = check_memory_usage()
     if mem > 0:
@@ -190,196 +270,122 @@ def main():
         print(f"ERROR: End point outside grid bounds")
         sys.exit(1)
 
-    start_elev = elevation[start_row, start_col]
-    end_elev = elevation[end_row, end_col]
-    print(f"    Start elevation: {start_elev:.0f} m")
-    print(f"    End elevation: {end_elev:.0f} m")
+    # Step 5: Run pathfinder THREE times
+    results = {}
+    modes = ["strict", "pragmatic", "emergency"]
 
-    # Step 5: Run MCP pathfinder
-    print(f"\n[5] Running MCP_Geometric pathfinder...")
-    t5 = time.time()
+    for i, mode in enumerate(modes, start=5):
+        print(f"\n[{i}] Running pathfinder (boundary_mode=\"{mode}\")...")
+        t_start = time.time()
+        results[mode] = run_pathfinder(
+            elevation, meta, friction_mult, barriers,
+            boundary_mode=mode,
+            start_row=start_row, start_col=start_col,
+            end_row=end_row, end_col=end_col,
+            dem_reader=dem_reader,
+        )
+        t_end = time.time()
+        print(f"    Completed in {t_end - t_start:.1f}s")
 
-    mcp = MCP_Geometric(cost, fully_connected=True)
-    cumulative_costs, traceback = mcp.find_costs([(start_row, start_col)])
-    t6 = time.time()
+    # Step 6: Save GeoJSON outputs
+    print(f"\n[8] Saving GeoJSON outputs...")
 
-    print(f"    Dijkstra completed in {t6 - t5:.1f}s")
+    OUTPUT_PATHS["strict"].parent.mkdir(parents=True, exist_ok=True)
 
-    end_cost = cumulative_costs[end_row, end_col]
-    print(f"    Total cost to endpoint: {end_cost:.0f} seconds ({end_cost/60:.1f} minutes)")
+    for mode, result in results.items():
+        output_path = OUTPUT_PATHS[mode]
+        if result["success"]:
+            geojson = {
+                "type": "Feature",
+                "properties": {
+                    "type": f"offroute_{mode}",
+                    "phase": "O2c",
+                    "boundary_mode": mode,
+                    "start": {"lat": START_LAT, "lon": START_LON},
+                    "end": {"lat": END_LAT, "lon": END_LON},
+                    **{k: v for k, v in result.items() if k not in ["success", "coordinates"]},
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": result["coordinates"],
+                }
+            }
+            with open(output_path, "w") as f:
+                json.dump(geojson, f, indent=2)
+            print(f"    Saved: {output_path}")
+        else:
+            print(f"    SKIPPED ({mode}): {result['reason']}")
 
-    if np.isinf(end_cost):
-        print("ERROR: No path found to endpoint (blocked by impassable terrain)")
-        sys.exit(1)
+    t_total = time.time()
 
-    t7 = time.time()
-    path_indices = mcp.traceback((end_row, end_col))
-    t8 = time.time()
+    # Final report - three-way comparison
+    print(f"\n" + "=" * 80)
+    print("THREE-WAY COMPARISON")
+    print("=" * 80)
 
-    print(f"    Traceback completed in {t8 - t7:.2f}s")
-    print(f"    Path length: {len(path_indices)} cells")
+    # Check how many succeeded
+    success_count = sum(1 for r in results.values() if r["success"])
 
-    mem = check_memory_usage()
-    if mem > 0:
-        print(f"    Memory usage: {mem:.1f} GB")
+    if success_count == 3:
+        print(f"{'Metric':<22} {'STRICT':<18} {'PRAGMATIC':<18} {'EMERGENCY':<18}")
+        print("-" * 80)
 
-    # Step 6: Convert path to coordinates and compute stats
-    print(f"\n[6] Converting path to GeoJSON...")
+        metrics = [
+            ("Distance (km)", "total_distance_km", ".2f"),
+            ("Effort time (min)", "total_time_minutes", ".1f"),
+            ("Cell count", "cell_count", "d"),
+            ("Elevation gain (m)", "elevation_gain_m", ".0f"),
+            ("Elevation loss (m)", "elevation_loss_m", ".0f"),
+            ("Barrier crossings", "barrier_crossings", "d"),
+            ("Impassable cells", "impassable_cells", ",d"),
+        ]
 
-    coordinates = []
-    elevations = []
-    friction_values = []
+        for label, key, fmt in metrics:
+            vals = [results[m][key] for m in modes]
+            print(f"{label:<22} {vals[0]:<18{fmt}} {vals[1]:<18{fmt}} {vals[2]:<18{fmt}}")
 
-    for row, col in path_indices:
-        lat, lon = dem_reader.pixel_to_latlon(row, col, meta)
-        elev = elevation[row, col]
-        fric = friction_raw[row, col]
-        coordinates.append([lon, lat])
-        elevations.append(elev)
-        friction_values.append(fric)
+        # Analysis
+        print(f"\n" + "-" * 80)
+        print("ANALYSIS")
+        print("-" * 80)
 
-    # Compute path distance
-    total_distance_m = 0
-    for i in range(1, len(coordinates)):
-        lon1, lat1 = coordinates[i-1]
-        lon2, lat2 = coordinates[i]
-        R = 6371000
-        dlat = np.radians(lat2 - lat1)
-        dlon = np.radians(lon2 - lon1)
-        a = np.sin(dlat/2)**2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon/2)**2
-        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
-        total_distance_m += R * c
+        strict_crossings = results["strict"]["barrier_crossings"]
+        pragmatic_crossings = results["pragmatic"]["barrier_crossings"]
+        emergency_crossings = results["emergency"]["barrier_crossings"]
 
-    # Compute elevation gain/loss
-    elev_arr = np.array(elevations)
-    elev_diff = np.diff(elev_arr)
-    elev_gain = np.sum(elev_diff[elev_diff > 0])
-    elev_loss = np.sum(np.abs(elev_diff[elev_diff < 0]))
+        print(f"Barrier crossings: strict={strict_crossings}, pragmatic={pragmatic_crossings}, emergency={emergency_crossings}")
 
-    # Friction stats along path
-    fric_arr = np.array(friction_values)
-    valid_fric = fric_arr[(fric_arr > 0) & (fric_arr < 255)]
+        if strict_crossings == 0 and pragmatic_crossings == 0 and emergency_crossings == 0:
+            print("No path crosses private land - terrain naturally avoids barriers.")
+        else:
+            if emergency_crossings > pragmatic_crossings:
+                print(f"Pragmatic mode reduces barrier crossings vs emergency: {emergency_crossings} -> {pragmatic_crossings}")
+            if pragmatic_crossings > 0 and strict_crossings == 0:
+                print(f"Strict mode completely avoids private land (pragmatic crosses {pragmatic_crossings} cells)")
 
-    # Build GeoJSON
-    geojson = {
-        "type": "Feature",
-        "properties": {
-            "type": "offroute_prototype_friction",
-            "phase": "O2b",
-            "start": {"lat": START_LAT, "lon": START_LON},
-            "end": {"lat": END_LAT, "lon": END_LON},
-            "total_time_seconds": float(end_cost),
-            "total_time_minutes": float(end_cost / 60),
-            "total_distance_m": float(total_distance_m),
-            "total_distance_km": float(total_distance_m / 1000),
-            "elevation_gain_m": float(elev_gain),
-            "elevation_loss_m": float(elev_loss),
-            "min_elevation_m": float(np.min(elev_arr)),
-            "max_elevation_m": float(np.max(elev_arr)),
-            "friction_min": int(valid_fric.min()) if len(valid_fric) > 0 else 0,
-            "friction_max": int(valid_fric.max()) if len(valid_fric) > 0 else 0,
-            "friction_mean": float(valid_fric.mean()) if len(valid_fric) > 0 else 0,
-            "cell_count": len(path_indices),
-            "cell_size_m": meta["cell_size_m"],
-        },
-        "geometry": {
-            "type": "LineString",
-            "coordinates": coordinates,
-        }
-    }
+            # Time/distance comparison
+            if results["strict"]["total_time_minutes"] > results["emergency"]["total_time_minutes"]:
+                time_penalty = results["strict"]["total_time_minutes"] - results["emergency"]["total_time_minutes"]
+                print(f"Time cost of strict boundary respect: +{time_penalty:.1f} min")
 
-    # Write output
-    OUTPUT_PATH_FRICTION.parent.mkdir(parents=True, exist_ok=True)
-    with open(OUTPUT_PATH_FRICTION, "w") as f:
-        json.dump(geojson, f, indent=2)
-
-    t_end = time.time()
-
-    # Final report
-    print(f"\n" + "=" * 60)
-    print("RESULTS (Phase O2b with Friction)")
-    print("=" * 60)
-    print(f"Start:            ({START_LAT:.4f}, {START_LON:.4f})")
-    print(f"End:              ({END_LAT:.4f}, {END_LON:.4f})")
-    print(f"Total effort:     {end_cost/60:.1f} minutes ({end_cost/3600:.2f} hours)")
-    print(f"Distance:         {total_distance_m/1000:.2f} km")
-    print(f"Elevation gain:   {elev_gain:.0f} m")
-    print(f"Elevation loss:   {elev_loss:.0f} m")
-    print(f"Elevation range:  {np.min(elev_arr):.0f} - {np.max(elev_arr):.0f} m")
-    if len(valid_fric) > 0:
-        print(f"Friction (path):  min={valid_fric.min()}, max={valid_fric.max()}, mean={valid_fric.mean():.1f}")
-    print(f"Path cells:       {len(path_indices):,}")
-    print(f"Wall time:        {t_end - t0:.1f}s")
-    print(f"\nOutput saved to:  {OUTPUT_PATH_FRICTION}")
-
-    # Validation
-    print(f"\n" + "-" * 60)
-    print("VALIDATION")
-    print("-" * 60)
-
-    # Check coordinates are within bbox
-    lons = [c[0] for c in coordinates]
-    lats = [c[1] for c in coordinates]
-    lon_ok = BBOX["west"] <= min(lons) and max(lons) <= BBOX["east"]
-    lat_ok = BBOX["south"] <= min(lats) and max(lats) <= BBOX["north"]
-    print(f"Coordinates within bbox: {'PASS' if lon_ok and lat_ok else 'FAIL'}")
-
-    # Check path is not trivial
-    is_nontrivial = len(path_indices) > 10 and total_distance_m > 1000
-    print(f"Path is non-trivial: {'PASS' if is_nontrivial else 'FAIL'}")
-
-    # Check sinuosity
-    straight_line_dist = np.sqrt(
-        (coordinates[-1][0] - coordinates[0][0])**2 +
-        (coordinates[-1][1] - coordinates[0][1])**2
-    ) * 111000
-    sinuosity = total_distance_m / max(straight_line_dist, 1)
-    print(f"Sinuosity: {sinuosity:.2f} (>1.0 means path curves around obstacles)")
-
-    # CRITICAL: Check no water cells (friction=255) on path
-    # This is the authoritative test - friction layer prevents water crossings
-    print(f"\n--- Water Avoidance Check ---")
-    water_on_path = np.sum(fric_arr == 255)
-    if water_on_path > 0:
-        print(f"FAIL: Path crosses {water_on_path} water cells (friction=255)")
-        sys.exit(1)
     else:
-        print(f"PASS: No water cells (friction=255) on path")
+        print(f"Only {success_count}/3 modes found a path:")
+        for mode, result in results.items():
+            if result["success"]:
+                print(f"  {mode}: {result['total_distance_km']:.2f} km, {result['total_time_minutes']:.1f} min")
+            else:
+                print(f"  {mode}: FAILED - {result.get('reason', 'unknown')}")
 
-    # Informational: Check if path goes through lake bounding box
-    # Path may go through land cells within the bbox, which is fine
-    print(f"\n--- Lake Bounding Box Check (informational) ---")
-    print(f"Murtaugh Lake bounds: {LAKE_BOUNDS}")
-    crosses_lake, crossing_point = path_crosses_lake(coordinates, LAKE_BOUNDS)
-    if crosses_lake:
-        print(f"INFO: Path passes through lake bbox at {crossing_point}")
-        print(f"      (This is OK if friction check passed - path uses land cells)")
-    else:
-        print(f"PASS: Path does not enter lake bounding box")
+    print(f"\n" + "-" * 80)
+    print(f"Total wall time: {t_total - t0:.1f}s")
+    print(f"Closed cells in bbox: {closed_cells:,}")
 
-    # Compare with Phase O1 if available
-    print(f"\n" + "-" * 60)
-    print("COMPARISON: Phase O1 vs O2b")
-    print("-" * 60)
-
-    if OUTPUT_PATH_O1.exists():
-        with open(OUTPUT_PATH_O1) as f:
-            o1_data = json.load(f)
-        o1_props = o1_data["properties"]
-
-        print(f"{'Metric':<20} {'O1 (no friction)':<20} {'O2b (with friction)':<20}")
-        print("-" * 60)
-        print(f"{'Distance (km)':<20} {o1_props['total_distance_km']:<20.2f} {total_distance_m/1000:<20.2f}")
-        print(f"{'Effort (min)':<20} {o1_props['total_time_minutes']:<20.1f} {end_cost/60:<20.1f}")
-        print(f"{'Cell count':<20} {o1_props['cell_count']:<20} {len(path_indices):<20}")
-        print(f"{'Elev gain (m)':<20} {o1_props['elevation_gain_m']:<20.0f} {elev_gain:<20.0f}")
-    else:
-        print(f"Phase O1 output not found at {OUTPUT_PATH_O1}")
-        print(f"Run the O1 prototype first to enable comparison.")
-
+    # Cleanup
     dem_reader.close()
     friction_reader.close()
-    print("\nPrototype completed successfully.")
+    barrier_reader.close()
+
+    print("\nPrototype completed.")
 
 
 if __name__ == "__main__":

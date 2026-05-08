@@ -3,11 +3,11 @@ Tobler off-path hiking cost function for OFFROUTE.
 
 Computes travel time cost based on terrain slope using Tobler's
 hiking function with off-trail penalty. Optionally applies friction
-multipliers from land cover data.
+multipliers from land cover data and barrier grids from PAD-US.
 """
 import math
 import numpy as np
-from typing import Optional
+from typing import Optional, Literal
 
 # Maximum passable slope in degrees
 MAX_SLOPE_DEG = 40.0
@@ -15,6 +15,9 @@ MAX_SLOPE_DEG = 40.0
 # Tobler off-path parameters
 TOBLER_BASE_SPEED = 6.0
 TOBLER_OFF_TRAIL_MULT = 0.6
+
+# Pragmatic mode friction multiplier for private land
+PRAGMATIC_BARRIER_MULTIPLIER = 5.0
 
 
 def tobler_speed(grade: float) -> float:
@@ -33,14 +36,16 @@ def compute_cost_grid(
     cell_size_m: float,
     cell_size_lat_m: float = None,
     cell_size_lon_m: float = None,
-    friction: Optional[np.ndarray] = None
+    friction: Optional[np.ndarray] = None,
+    barriers: Optional[np.ndarray] = None,
+    boundary_mode: Literal["strict", "pragmatic", "emergency"] = "pragmatic"
 ) -> np.ndarray:
     """
     Compute isotropic travel cost grid from elevation data.
 
     Each cell's cost represents the time (in seconds) to traverse that cell,
     based on the average slope from neighboring cells.
-    
+
     Args:
         elevation: 2D array of elevation values in meters
         cell_size_m: Average cell size in meters
@@ -50,11 +55,23 @@ def compute_cost_grid(
                   Values should be float (1.0 = baseline, 2.0 = 2x slower).
                   np.inf marks impassable cells.
                   If None, no friction is applied (backward compatible).
-    
+        barriers: Optional 2D array of barrier values (uint8).
+                  255 = closed/restricted area (from PAD-US Pub_Access = XA).
+                  0 = accessible.
+                  If None, no barriers are applied.
+        boundary_mode: How to handle private/restricted land barriers:
+                  "strict"    - cells with barrier=255 become impassable (np.inf)
+                  "pragmatic" - cells with barrier=255 get 5.0x friction penalty
+                  "emergency" - barriers are ignored entirely
+                  Default: "pragmatic"
+
     Returns:
         2D array of travel cost in seconds per cell.
         np.inf for impassable cells.
     """
+    if boundary_mode not in ("strict", "pragmatic", "emergency"):
+        raise ValueError(f"boundary_mode must be 'strict', 'pragmatic', or 'emergency', got '{boundary_mode}'")
+
     if cell_size_lat_m is None:
         cell_size_lat_m = cell_size_m
     if cell_size_lon_m is None:
@@ -103,6 +120,22 @@ def compute_cost_grid(
         # Multiply cost by friction (inf * anything = inf, which is correct)
         cost = cost * friction
 
+    # Apply barriers based on boundary_mode
+    if barriers is not None and boundary_mode != "emergency":
+        if barriers.shape != elevation.shape:
+            raise ValueError(
+                f"Barriers shape {barriers.shape} does not match elevation shape {elevation.shape}"
+            )
+
+        barrier_mask = barriers == 255
+
+        if boundary_mode == "strict":
+            # Mark closed/restricted areas as impassable
+            cost[barrier_mask] = np.inf
+        elif boundary_mode == "pragmatic":
+            # Apply friction penalty to closed/restricted areas
+            cost[barrier_mask] = cost[barrier_mask] * PRAGMATIC_BARRIER_MULTIPLIER
+
     return cost
 
 
@@ -112,7 +145,7 @@ if __name__ == "__main__":
         speed = tobler_speed(grade)
         print(f"  Grade {grade:+.2f}: {speed:.2f} km/h")
 
-    print("\nTesting cost grid computation (no friction):")
+    print("\nTesting cost grid computation (no friction, no barriers):")
     elev = np.arange(100).reshape(10, 10).astype(np.float32) * 10
     cost = compute_cost_grid(elev, cell_size_m=30.0)
     print(f"  Elevation range: {elev.min():.0f} - {elev.max():.0f} m")
@@ -130,3 +163,16 @@ if __name__ == "__main__":
     print(f"  Base cost (flat, 30m cell): {30 * 3.6 / (0.6 * 6.0 * np.exp(-3.5 * 0.05)):.1f} s")
     print(f"  With 1.5x friction: {cost[0, 0]:.1f} s")
     print(f"  Impassable cells: {np.sum(np.isinf(cost))}")
+
+    print("\nTesting cost grid with barriers (three modes):")
+    elev = np.ones((10, 10), dtype=np.float32) * 1000  # flat terrain
+    barriers = np.zeros((10, 10), dtype=np.uint8)
+    barriers[3:7, 3:7] = 255  # 4x4 closed area in center
+
+    base_cost = 30 * 3.6 / (0.6 * 6.0 * np.exp(-3.5 * 0.05))
+
+    for mode in ["strict", "pragmatic", "emergency"]:
+        cost = compute_cost_grid(elev, cell_size_m=30.0, barriers=barriers, boundary_mode=mode)
+        impassable = np.sum(np.isinf(cost))
+        barrier_cost = cost[5, 5] if not np.isinf(cost[5, 5]) else "inf"
+        print(f"  {mode:10s}: {impassable} impassable, barrier cell cost = {barrier_cost}")
