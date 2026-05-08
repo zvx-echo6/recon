@@ -2,11 +2,12 @@
 Tobler off-path hiking cost function for OFFROUTE.
 
 Computes travel time cost based on terrain slope using Tobler's
-hiking function with off-trail penalty.
+hiking function with off-trail penalty. Optionally applies friction
+multipliers from land cover data.
 """
 import math
 import numpy as np
-from typing import Tuple
+from typing import Optional
 
 # Maximum passable slope in degrees
 MAX_SLOPE_DEG = 40.0
@@ -31,13 +32,28 @@ def compute_cost_grid(
     elevation: np.ndarray,
     cell_size_m: float,
     cell_size_lat_m: float = None,
-    cell_size_lon_m: float = None
+    cell_size_lon_m: float = None,
+    friction: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
     Compute isotropic travel cost grid from elevation data.
 
     Each cell's cost represents the time (in seconds) to traverse that cell,
     based on the average slope from neighboring cells.
+    
+    Args:
+        elevation: 2D array of elevation values in meters
+        cell_size_m: Average cell size in meters
+        cell_size_lat_m: Cell size in latitude direction (optional)
+        cell_size_lon_m: Cell size in longitude direction (optional)
+        friction: Optional 2D array of friction multipliers.
+                  Values should be float (1.0 = baseline, 2.0 = 2x slower).
+                  np.inf marks impassable cells.
+                  If None, no friction is applied (backward compatible).
+    
+    Returns:
+        2D array of travel cost in seconds per cell.
+        np.inf for impassable cells.
     """
     if cell_size_lat_m is None:
         cell_size_lat_m = cell_size_m
@@ -78,6 +94,15 @@ def compute_cost_grid(
     # Handle NaN elevations (no data)
     cost[np.isnan(elevation)] = np.inf
 
+    # Apply friction multipliers if provided
+    if friction is not None:
+        if friction.shape != elevation.shape:
+            raise ValueError(
+                f"Friction shape {friction.shape} does not match elevation shape {elevation.shape}"
+            )
+        # Multiply cost by friction (inf * anything = inf, which is correct)
+        cost = cost * friction
+
     return cost
 
 
@@ -87,8 +112,21 @@ if __name__ == "__main__":
         speed = tobler_speed(grade)
         print(f"  Grade {grade:+.2f}: {speed:.2f} km/h")
 
-    print("\nTesting cost grid computation:")
+    print("\nTesting cost grid computation (no friction):")
     elev = np.arange(100).reshape(10, 10).astype(np.float32) * 10
     cost = compute_cost_grid(elev, cell_size_m=30.0)
     print(f"  Elevation range: {elev.min():.0f} - {elev.max():.0f} m")
-    print(f"  Cost range: {cost[~np.isinf(cost)].min():.1f} - {cost[~np.isinf(cost)].max():.1f} s")
+    finite = cost[~np.isinf(cost)]
+    if len(finite) > 0:
+        print(f"  Cost range: {finite.min():.1f} - {finite.max():.1f} s")
+    else:
+        print(f"  All cells impassable (test data too steep)")
+
+    print("\nTesting cost grid with friction:")
+    elev = np.ones((10, 10), dtype=np.float32) * 1000  # flat terrain
+    friction = np.ones((10, 10), dtype=np.float32) * 1.5  # 1.5x friction
+    friction[5, 5] = np.inf  # one impassable cell
+    cost = compute_cost_grid(elev, cell_size_m=30.0, friction=friction)
+    print(f"  Base cost (flat, 30m cell): {30 * 3.6 / (0.6 * 6.0 * np.exp(-3.5 * 0.05)):.1f} s")
+    print(f"  With 1.5x friction: {cost[0, 0]:.1f} s")
+    print(f"  Impassable cells: {np.sum(np.isinf(cost))}")
