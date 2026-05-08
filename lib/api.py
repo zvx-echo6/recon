@@ -2799,3 +2799,137 @@ def api_offroute():
     except Exception as e:
         logger.exception("Offroute error")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ── MVUM Places Panel API ──
+
+@app.route("/api/mvum", methods=["GET"])
+def api_mvum():
+    """
+    Query MVUM (Motor Vehicle Use Map) features near a point.
+
+    Used by the Navi frontend places panel when a user taps near a road/trail.
+
+    Query params:
+        lat: Latitude
+        lon: Longitude
+        radius: Search radius in meters (default: 50)
+
+    Response:
+        {
+            "status": "ok",
+            "feature": {
+                "id": "FR 123",
+                "name": "Some Forest Road",
+                "forest": "Sawtooth National Forest",
+                "district": "Ketchum Ranger District",
+                "surface": "NAT",
+                "maintenance_level": 2,
+                "seasonal": "Seasonal",
+                "symbol": 2,
+                "access": {
+                    "passenger_vehicle": { "status": "Open", "dates": "06/15-10/15" },
+                    "high_clearance": { "status": "Open", "dates": "06/15-10/15" },
+                    "atv": { "status": "Open", "dates": "06/15-10/15" },
+                    ...
+                },
+                "geometry": { GeoJSON LineString }
+            }
+        }
+
+    If no MVUM feature within radius:
+        { "status": "ok", "feature": null }
+    """
+    try:
+        lat = request.args.get("lat", type=float)
+        lon = request.args.get("lon", type=float)
+        radius = request.args.get("radius", 50, type=float)
+
+        if lat is None or lon is None:
+            return jsonify({"status": "error", "message": "lat and lon required"}), 400
+
+        from .offroute.mvum import MVUMReader
+
+        reader = MVUMReader()
+        try:
+            # Try roads first, then trails
+            feature = reader.query_nearest(lat, lon, radius, "mvum_roads")
+            if feature is None:
+                feature = reader.query_nearest(lat, lon, radius, "mvum_trails")
+
+            if feature is None:
+                return jsonify({"status": "ok", "feature": None})
+
+            # Format access info
+            access = {
+                "passenger_vehicle": {
+                    "status": feature.get("passengervehicle"),
+                    "dates": feature.get("passengervehicle_datesopen")
+                },
+                "high_clearance": {
+                    "status": feature.get("highclearancevehicle"),
+                    "dates": feature.get("highclearancevehicle_datesopen")
+                },
+                "atv": {
+                    "status": feature.get("atv"),
+                    "dates": feature.get("atv_datesopen")
+                },
+                "motorcycle": {
+                    "status": feature.get("motorcycle"),
+                    "dates": feature.get("motorcycle_datesopen")
+                },
+                "4wd_gt50": {
+                    "status": feature.get("fourwd_gt50inches"),
+                    "dates": feature.get("fourwd_gt50_datesopen")
+                },
+                "2wd_gt50": {
+                    "status": feature.get("twowd_gt50inches"),
+                    "dates": feature.get("twowd_gt50_datesopen")
+                },
+                "e_bike_class1": {
+                    "status": feature.get("e_bike_class1"),
+                    "dates": feature.get("e_bike_class1_dur")
+                },
+                "e_bike_class2": {
+                    "status": feature.get("e_bike_class2"),
+                    "dates": feature.get("e_bike_class2_dur")
+                },
+                "e_bike_class3": {
+                    "status": feature.get("e_bike_class3"),
+                    "dates": feature.get("e_bike_class3_dur")
+                },
+            }
+
+            # Parse maintenance level
+            maint_level = feature.get("operationalmaintlevel", "")
+            maint_num = None
+            if maint_level:
+                # Extract first digit: "2 - HIGH CLEARANCE VEHICLES" -> 2
+                import re
+                match = re.match(r"(\d+)", maint_level)
+                if match:
+                    maint_num = int(match.group(1))
+
+            result = {
+                "id": feature.get("id"),
+                "name": feature.get("name"),
+                "forest": feature.get("forestname"),
+                "district": feature.get("districtname"),
+                "surface": feature.get("surfacetype"),
+                "maintenance_level": maint_num,
+                "seasonal": feature.get("seasonal"),
+                "symbol": feature.get("symbol"),
+                "trail_class": feature.get("trailclass"),
+                "trail_system": feature.get("trailsystem"),
+                "access": access,
+                "geometry": feature.get("geojson")
+            }
+
+            return jsonify({"status": "ok", "feature": result})
+
+        finally:
+            reader.close()
+
+    except Exception as e:
+        logger.exception("MVUM query error")
+        return jsonify({"status": "error", "message": str(e)}), 500

@@ -27,6 +27,7 @@ from .cost import compute_cost_grid
 from .friction import FrictionReader, friction_to_multiplier
 from .barriers import BarrierReader, WildernessReader, DEFAULT_WILDERNESS_PATH
 from .trails import TrailReader
+from .mvum import get_mvum_access_grid
 
 # Paths
 NAVI_DB_PATH = Path("/mnt/nav/navi.db")
@@ -407,6 +408,22 @@ class OffrouteRouter:
             target_shape=elevation.shape
         )
 
+        # Load MVUM access data (only for motorized modes)
+        # MVUM is motor-vehicle specific — foot mode skips entirely
+        mvum = None
+        if mode in ("mtb", "atv", "vehicle"):
+            try:
+                mvum = get_mvum_access_grid(
+                    south=bbox["south"], north=bbox["north"],
+                    west=bbox["west"], east=bbox["east"],
+                    target_shape=elevation.shape,
+                    mode=mode,
+                    check_date=None,  # TODO: accept date parameter
+                )
+            except Exception as e:
+                # MVUM data may not be available - continue without it
+                pass
+
         # Compute cost grid with mode-specific parameters
         cost = compute_cost_grid(
             elevation,
@@ -416,12 +433,13 @@ class OffrouteRouter:
             trails=trails,
             barriers=barriers,
             wilderness=wilderness,
+            mvum=mvum,
             boundary_mode=boundary_mode,
             mode=mode,
         )
 
         # Free intermediate arrays to reduce memory before MCP
-        # Note: Keep trails and barriers - needed for path statistics
+        # Note: Keep trails, barriers, and mvum - needed for path statistics
         del friction_mult, friction_raw, wilderness
         import gc
         gc.collect()
@@ -471,6 +489,7 @@ class OffrouteRouter:
         elevations = []
         trail_values = []
         barrier_crossings = 0
+        mvum_closed_crossings = 0
 
         for row, col in path_indices:
             lat, lon = self.dem_reader.pixel_to_latlon(row, col, meta)
@@ -479,6 +498,8 @@ class OffrouteRouter:
             trail_values.append(trails[row, col])
             if barriers[row, col] == 255:
                 barrier_crossings += 1
+            if mvum is not None and mvum[row, col] == 255:
+                mvum_closed_crossings += 1
 
         # Calculate stats
         wilderness_distance_m = 0
@@ -497,8 +518,10 @@ class OffrouteRouter:
         total_cells = len(trail_arr)
         on_trail_pct = float(100 * on_trail_cells / total_cells) if total_cells > 0 else 0
 
-        # Free trails and barriers now that path stats are computed
+        # Free trails, barriers, and mvum now that path stats are computed
         del trails, barriers
+        if mvum is not None:
+            del mvum
 
         # Entry point
         entry_lat = best_entry["entry_point"]["lat"]
@@ -572,6 +595,7 @@ class OffrouteRouter:
                 "on_trail_pct": on_trail_pct,
                 "cell_count": total_cells,
                 "barrier_crossings": barrier_crossings,
+                "mvum_closed_crossings": mvum_closed_crossings,
                 "mode": mode,
             },
             "geometry": {"type": "LineString", "coordinates": wilderness_coords}
@@ -620,6 +644,7 @@ class OffrouteRouter:
             "network_duration_minutes": float(network_segment["duration_minutes"]) if network_segment else 0,
             "on_trail_pct": on_trail_pct,
             "barrier_crossings": barrier_crossings,
+            "mvum_closed_crossings": mvum_closed_crossings,
             "boundary_mode": boundary_mode,
             "mode": mode,
             "entry_point": {

@@ -213,6 +213,7 @@ def compute_cost_grid(
     trails: Optional[np.ndarray] = None,
     barriers: Optional[np.ndarray] = None,
     wilderness: Optional[np.ndarray] = None,
+    mvum: Optional[np.ndarray] = None,
     boundary_mode: Literal["strict", "pragmatic", "emergency"] = "pragmatic",
     mode: Literal["foot", "mtb", "atv", "vehicle"] = "foot"
 ) -> np.ndarray:
@@ -236,6 +237,10 @@ def compute_cost_grid(
                   255 = closed/restricted area (PAD-US Pub_Access = XA).
         wilderness: Optional[np.ndarray] of wilderness values (uint8).
                   255 = designated wilderness area.
+        mvum: Optional[np.ndarray] of MVUM access values (uint8).
+                  0 = no MVUM data, 1 = open, 255 = closed to this mode.
+                  MVUM closures respond to boundary_mode (strict/pragmatic/emergency).
+                  Foot mode should pass None (MVUM is motor-vehicle specific).
         boundary_mode: How to handle barriers ("strict", "pragmatic", "emergency")
         mode: Travel mode ("foot", "mtb", "atv", "vehicle")
 
@@ -391,6 +396,26 @@ def compute_cost_grid(
             barrier_mask = barriers == 255
             cost[barrier_mask] *= PRAGMATIC_BARRIER_MULTIPLIER
             del barrier_mask
+
+    # ─── MVUM closures (motor vehicle restrictions) ──────────────────────────
+    # MVUM only applies to motorized modes, not foot. Foot mode should pass mvum=None.
+    # MVUM closures respond to the same boundary_mode as PAD-US barriers:
+    #   "strict"    = MVUM-closed road/trail is impassable
+    #   "pragmatic" = MVUM-closed road/trail gets 5× friction penalty
+    #   "emergency" = MVUM closures ignored entirely
+    if mvum is not None and mode != "foot" and boundary_mode != "emergency":
+        if mvum.shape != elevation.shape:
+            raise ValueError(f"MVUM shape mismatch")
+
+        # Value 255 = road/trail exists but is closed to this mode
+        mvum_closed_mask = mvum == 255
+
+        if boundary_mode == "strict":
+            np.putmask(cost, mvum_closed_mask, np.inf)
+        elif boundary_mode == "pragmatic":
+            cost[mvum_closed_mask] *= PRAGMATIC_BARRIER_MULTIPLIER
+
+        del mvum_closed_mask
 
     return cost
 
