@@ -6,6 +6,8 @@ Connects the raster pathfinder (wilderness segment) to Valhalla (on-network segm
 Entry points are extracted from OSM highways and stored in /mnt/nav/navi.db.
 The pathfinder routes from a wilderness start to the nearest entry point,
 then Valhalla completes the route to the destination.
+
+Supports four travel modes: foot, mtb, atv, vehicle.
 """
 import json
 import math
@@ -23,7 +25,7 @@ from skimage.graph import MCP_Geometric
 from .dem import DEMReader
 from .cost import compute_cost_grid
 from .friction import FrictionReader, friction_to_multiplier
-from .barriers import BarrierReader
+from .barriers import BarrierReader, WildernessReader, DEFAULT_WILDERNESS_PATH
 from .trails import TrailReader
 
 # Paths
@@ -45,6 +47,7 @@ MODE_TO_COSTING = {
     "foot": "pedestrian",
     "mtb": "bicycle",
     "atv": "auto",
+    "vehicle": "auto",
 }
 
 
@@ -120,7 +123,6 @@ class EntryPointIndex:
 
     def query_radius(self, lat: float, lon: float, radius_km: float) -> List[Dict]:
         """Query entry points within radius of a point."""
-        # Approximate bbox for the radius
         lat_delta = radius_km / 111.0
         lon_delta = radius_km / (111.0 * math.cos(math.radians(lat)))
 
@@ -129,7 +131,6 @@ class EntryPointIndex:
             lon - lon_delta, lon + lon_delta
         )
 
-        # Filter by actual distance and add distance field
         result = []
         for p in points:
             dist = haversine_distance(lat, lon, p['lat'], p['lon'])
@@ -140,17 +141,12 @@ class EntryPointIndex:
         return sorted(result, key=lambda x: x['distance_m'])
 
     def build_index(self, osm_pbf_path: Path = OSM_PBF_PATH) -> Dict:
-        """
-        Build the entry point index from OSM PBF.
-
-        Extracts endpoints of highway features that connect to the network.
-        """
+        """Build the entry point index from OSM PBF."""
         if not osm_pbf_path.exists():
             raise FileNotFoundError(f"OSM PBF not found: {osm_pbf_path}")
 
         print(f"Building trail entry point index from {osm_pbf_path}...")
 
-        # Highway types to extract (routable network entry points)
         highway_types = [
             "primary", "secondary", "tertiary", "unclassified",
             "residential", "service", "track", "path", "footway", "bridleway"
@@ -159,42 +155,29 @@ class EntryPointIndex:
         stats = {"total": 0, "by_class": {}}
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Extract highways to GeoJSON
             geojson_path = Path(tmpdir) / "highways.geojson"
 
-            # Build osmium tags-filter expressions (one per highway type)
             print(f"  Extracting highways with osmium...")
-            cmd = [
-                "osmium", "tags-filter",
-                str(osm_pbf_path),
-            ]
-            # Add each highway type as a separate filter expression
+            cmd = ["osmium", "tags-filter", str(osm_pbf_path)]
             for ht in highway_types:
                 cmd.append(f"w/highway={ht}")
             cmd.extend(["-o", str(Path(tmpdir) / "filtered.osm.pbf"), "--overwrite"])
-
             subprocess.run(cmd, check=True, capture_output=True)
 
-            # Convert to GeoJSON
             print(f"  Converting to GeoJSON with ogr2ogr...")
             cmd = [
                 "ogr2ogr", "-f", "GeoJSON",
                 str(geojson_path),
                 str(Path(tmpdir) / "filtered.osm.pbf"),
-                "lines",
-                "-t_srs", "EPSG:4326"
+                "lines", "-t_srs", "EPSG:4326"
             ]
             subprocess.run(cmd, check=True, capture_output=True)
 
-            # Parse GeoJSON and extract endpoints
             print(f"  Extracting entry points...")
             with open(geojson_path) as f:
                 data = json.load(f)
 
-            # Collect unique points (endpoints)
-            # Key: (lat, lon) rounded to 5 decimal places (~1m precision)
             points = {}
-
             for feature in data.get("features", []):
                 props = feature.get("properties", {})
                 geom = feature.get("geometry", {})
@@ -209,62 +192,48 @@ class EntryPointIndex:
                 highway_class = props.get("highway", "unknown")
                 name = props.get("name", "")
 
-                # Extract endpoints
                 for coord in [coords[0], coords[-1]]:
                     lon, lat = coord[0], coord[1]
                     key = (round(lat, 5), round(lon, 5))
 
                     if key not in points:
                         points[key] = {
-                            "lat": lat,
-                            "lon": lon,
-                            "highway_class": highway_class,
-                            "name": name
+                            "lat": lat, "lon": lon,
+                            "highway_class": highway_class, "name": name
                         }
                     else:
-                        # Keep the "best" highway class (roads > tracks > paths)
                         existing = points[key]
                         if self._highway_priority(highway_class) < self._highway_priority(existing["highway_class"]):
                             points[key]["highway_class"] = highway_class
                         if name and not existing["name"]:
                             points[key]["name"] = name
 
-        # Create/update database
         print(f"  Writing {len(points)} entry points to {self.db_path}...")
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._get_conn()
 
-        # Create table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS trail_entry_points (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                lat REAL NOT NULL,
-                lon REAL NOT NULL,
-                highway_class TEXT NOT NULL,
-                name TEXT
+                lat REAL NOT NULL, lon REAL NOT NULL,
+                highway_class TEXT NOT NULL, name TEXT
             )
         """)
-
-        # Clear existing data
         conn.execute("DELETE FROM trail_entry_points")
 
-        # Insert new points
         for point in points.values():
-            conn.execute("""
-                INSERT INTO trail_entry_points (lat, lon, highway_class, name)
-                VALUES (?, ?, ?, ?)
-            """, (point["lat"], point["lon"], point["highway_class"], point["name"]))
-
+            conn.execute(
+                "INSERT INTO trail_entry_points (lat, lon, highway_class, name) VALUES (?, ?, ?, ?)",
+                (point["lat"], point["lon"], point["highway_class"], point["name"])
+            )
             stats["total"] += 1
             hc = point["highway_class"]
             stats["by_class"][hc] = stats["by_class"].get(hc, 0) + 1
 
-        # Create spatial index
         conn.execute("CREATE INDEX IF NOT EXISTS idx_entry_lat ON trail_entry_points(lat)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_entry_lon ON trail_entry_points(lon)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_entry_latlon ON trail_entry_points(lat, lon)")
-
         conn.commit()
 
         print(f"  Done. Total: {stats['total']} entry points")
@@ -291,12 +260,15 @@ class EntryPointIndex:
 class OffrouteRouter:
     """
     OFFROUTE Router — orchestrates wilderness pathfinding and Valhalla stitching.
+
+    Supports modes: foot, mtb, atv, vehicle
     """
 
     def __init__(self):
         self.dem_reader = None
         self.friction_reader = None
         self.barrier_reader = None
+        self.wilderness_reader = None
         self.trail_reader = None
         self.entry_index = EntryPointIndex()
 
@@ -308,6 +280,8 @@ class OffrouteRouter:
             self.friction_reader = FrictionReader()
         if self.barrier_reader is None:
             self.barrier_reader = BarrierReader()
+        if self.wilderness_reader is None and DEFAULT_WILDERNESS_PATH.exists():
+            self.wilderness_reader = WildernessReader()
         if self.trail_reader is None:
             self.trail_reader = TrailReader()
 
@@ -317,15 +291,24 @@ class OffrouteRouter:
         start_lon: float,
         end_lat: float,
         end_lon: float,
-        mode: Literal["foot", "mtb", "atv"] = "foot",
+        mode: Literal["foot", "mtb", "atv", "vehicle"] = "foot",
         boundary_mode: Literal["strict", "pragmatic", "emergency"] = "pragmatic"
     ) -> Dict:
         """
         Route from a wilderness start point to a destination.
 
+        Args:
+            start_lat, start_lon: Starting coordinates (wilderness)
+            end_lat, end_lon: Destination coordinates
+            mode: Travel mode (foot, mtb, atv, vehicle)
+            boundary_mode: How to handle private land (strict, pragmatic, emergency)
+
         Returns a GeoJSON FeatureCollection with wilderness and network segments.
         """
         t0 = time.time()
+
+        if mode not in MODE_TO_COSTING:
+            return {"status": "error", "message": f"Unknown mode: {mode}"}
 
         # Ensure entry point index exists
         if not self.entry_index.table_exists() or self.entry_index.get_entry_point_count() == 0:
@@ -334,28 +317,27 @@ class OffrouteRouter:
                 "message": "Trail entry point index not built. Run build_entry_index() first."
             }
 
-        # Find entry points near start
-        entry_points = self.entry_index.query_radius(
-            start_lat, start_lon, DEFAULT_SEARCH_RADIUS_KM
-        )
+        # Find entry points near start (limit to nearest 10 to control bbox size)
+        MAX_ENTRY_POINTS = 10
+        entry_points = self.entry_index.query_radius(start_lat, start_lon, DEFAULT_SEARCH_RADIUS_KM)
 
         if not entry_points:
-            # Try expanded radius
-            entry_points = self.entry_index.query_radius(
-                start_lat, start_lon, EXPANDED_SEARCH_RADIUS_KM
-            )
+            entry_points = self.entry_index.query_radius(start_lat, start_lon, EXPANDED_SEARCH_RADIUS_KM)
             if not entry_points:
                 return {
                     "status": "error",
                     "message": f"No trail entry points found within {EXPANDED_SEARCH_RADIUS_KM}km of start"
                 }
 
-        # Build bbox for pathfinding grid
-        # Include start, end, and all entry points
+        # Limit to nearest entry points to prevent huge bounding boxes
+        entry_points = entry_points[:MAX_ENTRY_POINTS]
+
+        # Build bbox with max size limit (prevent OOM on large areas)
+        MAX_BBOX_DEGREES = 0.5  # ~55km at mid-latitudes
         all_lats = [start_lat, end_lat] + [p["lat"] for p in entry_points]
         all_lons = [start_lon, end_lon] + [p["lon"] for p in entry_points]
 
-        padding = 0.05  # ~5km padding
+        padding = 0.05
         bbox = {
             "south": min(all_lats) - padding,
             "north": max(all_lats) + padding,
@@ -363,16 +345,28 @@ class OffrouteRouter:
             "east": max(all_lons) + padding,
         }
 
+        # Clamp bbox size to prevent memory exhaustion
+        lat_span = bbox["north"] - bbox["south"]
+        lon_span = bbox["east"] - bbox["west"]
+        if lat_span > MAX_BBOX_DEGREES or lon_span > MAX_BBOX_DEGREES:
+            center_lat = (bbox["south"] + bbox["north"]) / 2
+            center_lon = (bbox["west"] + bbox["east"]) / 2
+            half_span = MAX_BBOX_DEGREES / 2
+            bbox = {
+                "south": center_lat - half_span,
+                "north": center_lat + half_span,
+                "west": center_lon - half_span,
+                "east": center_lon + half_span,
+            }
+
         # Initialize readers
         self._init_readers()
 
         # Load elevation
         try:
             elevation, meta = self.dem_reader.get_elevation_grid(
-                south=bbox["south"],
-                north=bbox["north"],
-                west=bbox["west"],
-                east=bbox["east"],
+                south=bbox["south"], north=bbox["north"],
+                west=bbox["west"], east=bbox["east"],
             )
         except Exception as e:
             return {"status": "error", "message": f"Failed to load elevation: {e}"}
@@ -382,62 +376,69 @@ class OffrouteRouter:
         if mem > MEMORY_LIMIT_GB:
             return {"status": "error", "message": f"Memory limit exceeded: {mem:.1f}GB > {MEMORY_LIMIT_GB}GB"}
 
-        # Load friction
+        # Load friction (both processed and raw for mode-specific overrides)
         friction_raw = self.friction_reader.get_friction_grid(
-            south=bbox["south"],
-            north=bbox["north"],
-            west=bbox["west"],
-            east=bbox["east"],
+            south=bbox["south"], north=bbox["north"],
+            west=bbox["west"], east=bbox["east"],
             target_shape=elevation.shape
         )
         friction_mult = friction_to_multiplier(friction_raw)
 
         # Load barriers
         barriers = self.barrier_reader.get_barrier_grid(
-            south=bbox["south"],
-            north=bbox["north"],
-            west=bbox["west"],
-            east=bbox["east"],
+            south=bbox["south"], north=bbox["north"],
+            west=bbox["west"], east=bbox["east"],
             target_shape=elevation.shape
         )
+
+        # Load wilderness (if available and mode requires it)
+        wilderness = None
+        if self.wilderness_reader is not None and mode in ("mtb", "atv", "vehicle"):
+            wilderness = self.wilderness_reader.get_wilderness_grid(
+                south=bbox["south"], north=bbox["north"],
+                west=bbox["west"], east=bbox["east"],
+                target_shape=elevation.shape
+            )
 
         # Load trails
         trails = self.trail_reader.get_trails_grid(
-            south=bbox["south"],
-            north=bbox["north"],
-            west=bbox["west"],
-            east=bbox["east"],
+            south=bbox["south"], north=bbox["north"],
+            west=bbox["west"], east=bbox["east"],
             target_shape=elevation.shape
         )
 
-        # Compute cost grid
+        # Compute cost grid with mode-specific parameters
         cost = compute_cost_grid(
             elevation,
             cell_size_m=meta["cell_size_m"],
             friction=friction_mult,
+            friction_raw=friction_raw,
             trails=trails,
             barriers=barriers,
+            wilderness=wilderness,
             boundary_mode=boundary_mode,
+            mode=mode,
         )
+
+        # Free intermediate arrays to reduce memory before MCP
+        # Note: Keep trails and barriers - needed for path statistics
+        del friction_mult, friction_raw, wilderness
+        import gc
+        gc.collect()
 
         # Convert start to pixel coordinates
         start_row, start_col = self.dem_reader.latlon_to_pixel(start_lat, start_lon, meta)
 
-        # Validate start is in bounds
         rows, cols = elevation.shape
         if not (0 <= start_row < rows and 0 <= start_col < cols):
             return {"status": "error", "message": "Start point outside grid bounds"}
 
-        # Mark entry points on the grid
+        # Mark entry points on grid
         entry_pixels = []
         for ep in entry_points:
             row, col = self.dem_reader.latlon_to_pixel(ep["lat"], ep["lon"], meta)
             if 0 <= row < rows and 0 <= col < cols:
-                entry_pixels.append({
-                    "row": row,
-                    "col": col,
-                    "entry_point": ep
-                })
+                entry_pixels.append({"row": row, "col": col, "entry_point": ep})
 
         if not entry_pixels:
             return {"status": "error", "message": "No entry points map to grid bounds"}
@@ -465,18 +466,21 @@ class OffrouteRouter:
         # Traceback wilderness path
         path_indices = mcp.traceback((best_entry["row"], best_entry["col"]))
 
-        # Convert to coordinates and collect stats
+        # Convert to coordinates
         wilderness_coords = []
         elevations = []
         trail_values = []
+        barrier_crossings = 0
 
         for row, col in path_indices:
             lat, lon = self.dem_reader.pixel_to_latlon(row, col, meta)
             wilderness_coords.append([lon, lat])
             elevations.append(elevation[row, col])
             trail_values.append(trails[row, col])
+            if barriers[row, col] == 255:
+                barrier_crossings += 1
 
-        # Calculate wilderness segment stats
+        # Calculate stats
         wilderness_distance_m = 0
         for i in range(1, len(wilderness_coords)):
             lon1, lat1 = wilderness_coords[i-1]
@@ -493,13 +497,16 @@ class OffrouteRouter:
         total_cells = len(trail_arr)
         on_trail_pct = float(100 * on_trail_cells / total_cells) if total_cells > 0 else 0
 
-        # Entry point reached
+        # Free trails and barriers now that path stats are computed
+        del trails, barriers
+
+        # Entry point
         entry_lat = best_entry["entry_point"]["lat"]
         entry_lon = best_entry["entry_point"]["lon"]
         entry_class = best_entry["entry_point"]["highway_class"]
         entry_name = best_entry["entry_point"].get("name", "")
 
-        # Call Valhalla for on-network segment
+        # Call Valhalla
         valhalla_costing = MODE_TO_COSTING.get(mode, "pedestrian")
 
         valhalla_request = {
@@ -515,11 +522,7 @@ class OffrouteRouter:
         valhalla_error = None
 
         try:
-            resp = requests.post(
-                f"{VALHALLA_URL}/route",
-                json=valhalla_request,
-                timeout=30
-            )
+            resp = requests.post(f"{VALHALLA_URL}/route", json=valhalla_request, timeout=30)
 
             if resp.status_code == 200:
                 valhalla_data = resp.json()
@@ -529,11 +532,8 @@ class OffrouteRouter:
                 if legs:
                     leg = legs[0]
                     shape = leg.get("shape", "")
-
-                    # Decode polyline6
                     network_coords = self._decode_polyline(shape)
 
-                    # Extract maneuvers
                     maneuvers = []
                     for m in leg.get("maneuvers", []):
                         maneuvers.append({
@@ -560,7 +560,6 @@ class OffrouteRouter:
         # Build response
         features = []
 
-        # Feature 1: Wilderness segment
         wilderness_feature = {
             "type": "Feature",
             "properties": {
@@ -572,15 +571,13 @@ class OffrouteRouter:
                 "boundary_mode": boundary_mode,
                 "on_trail_pct": on_trail_pct,
                 "cell_count": total_cells,
+                "barrier_crossings": barrier_crossings,
+                "mode": mode,
             },
-            "geometry": {
-                "type": "LineString",
-                "coordinates": wilderness_coords,
-            }
+            "geometry": {"type": "LineString", "coordinates": wilderness_coords}
         }
         features.append(wilderness_feature)
 
-        # Feature 2: Network segment (if available)
         if network_segment:
             network_feature = {
                 "type": "Feature",
@@ -590,40 +587,23 @@ class OffrouteRouter:
                     "duration_minutes": network_segment["duration_minutes"],
                     "maneuvers": network_segment["maneuvers"],
                 },
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": network_segment["coordinates"],
-                }
+                "geometry": {"type": "LineString", "coordinates": network_segment["coordinates"]}
             }
             features.append(network_feature)
 
-        # Build combined route coordinates
         combined_coords = wilderness_coords.copy()
         if network_segment:
-            # Skip first point of network segment (it's the same as last wilderness point)
             combined_coords.extend(network_segment["coordinates"][1:])
 
-        # Feature 3: Combined route
         combined_feature = {
             "type": "Feature",
-            "properties": {
-                "segment_type": "combined",
-                "mode": mode,
-                "boundary_mode": boundary_mode,
-            },
-            "geometry": {
-                "type": "LineString",
-                "coordinates": combined_coords,
-            }
+            "properties": {"segment_type": "combined", "mode": mode, "boundary_mode": boundary_mode},
+            "geometry": {"type": "LineString", "coordinates": combined_coords}
         }
         features.append(combined_feature)
 
-        geojson = {
-            "type": "FeatureCollection",
-            "features": features,
-        }
+        geojson = {"type": "FeatureCollection", "features": features}
 
-        # Build summary
         total_distance_km = wilderness_distance_m / 1000
         total_effort_minutes = best_cost / 60
 
@@ -639,22 +619,17 @@ class OffrouteRouter:
             "network_distance_km": float(network_segment["distance_km"]) if network_segment else 0,
             "network_duration_minutes": float(network_segment["duration_minutes"]) if network_segment else 0,
             "on_trail_pct": on_trail_pct,
+            "barrier_crossings": barrier_crossings,
             "boundary_mode": boundary_mode,
             "mode": mode,
             "entry_point": {
-                "lat": entry_lat,
-                "lon": entry_lon,
-                "highway_class": entry_class,
-                "name": entry_name,
+                "lat": entry_lat, "lon": entry_lon,
+                "highway_class": entry_class, "name": entry_name,
             },
             "computation_time_s": time.time() - t0,
         }
 
-        result = {
-            "status": "ok",
-            "route": geojson,
-            "summary": summary,
-        }
+        result = {"status": "ok", "route": geojson, "summary": summary}
 
         if valhalla_error:
             result["warning"] = f"Network segment incomplete: {valhalla_error}"
@@ -669,7 +644,6 @@ class OffrouteRouter:
         lon = 0
 
         while index < len(encoded):
-            # Latitude
             shift = 0
             result = 0
             while True:
@@ -682,7 +656,6 @@ class OffrouteRouter:
             dlat = ~(result >> 1) if result & 1 else result >> 1
             lat += dlat
 
-            # Longitude
             shift = 0
             result = 0
             while True:
@@ -707,6 +680,8 @@ class OffrouteRouter:
             self.friction_reader.close()
         if self.barrier_reader:
             self.barrier_reader.close()
+        if self.wilderness_reader:
+            self.wilderness_reader.close()
         if self.trail_reader:
             self.trail_reader.close()
         self.entry_index.close()
@@ -729,24 +704,33 @@ if __name__ == "__main__":
         print(f"\nDone. Total entry points: {stats['total']}")
 
     elif len(sys.argv) > 1 and sys.argv[1] == "test":
-        print("Testing router...")
+        print("Testing router (all modes)...")
 
         router = OffrouteRouter()
 
-        # Test route: wilderness to Twin Falls
-        result = router.route(
-            start_lat=42.35,
-            start_lon=-114.30,
-            end_lat=42.5629,
-            end_lon=-114.4609,
-            mode="foot",
-            boundary_mode="pragmatic"
-        )
+        for mode in ["foot", "mtb", "atv", "vehicle"]:
+            print(f"\n{'='*60}")
+            print(f"Mode: {mode}")
+            print("="*60)
 
-        print(json.dumps(result, indent=2, default=str))
+            result = router.route(
+                start_lat=42.35, start_lon=-114.30,
+                end_lat=42.5629, end_lon=-114.4609,
+                mode=mode, boundary_mode="pragmatic"
+            )
+
+            if result["status"] == "ok":
+                s = result["summary"]
+                print(f"  Wilderness: {s['wilderness_distance_km']:.2f} km, {s['wilderness_effort_minutes']:.1f} min")
+                print(f"  Network: {s['network_distance_km']:.2f} km, {s['network_duration_minutes']:.1f} min")
+                print(f"  On-trail: {s['on_trail_pct']:.1f}%")
+                print(f"  Entry: {s['entry_point']['highway_class']}")
+            else:
+                print(f"  ERROR: {result['message']}")
+
         router.close()
 
     else:
         print("Usage:")
         print("  python router.py build   # Build entry point index")
-        print("  python router.py test    # Test route")
+        print("  python router.py test    # Test all modes")
