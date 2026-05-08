@@ -2768,8 +2768,8 @@ def api_offroute():
 
         # Parse options
         mode = data.get("mode", "foot")
-        if mode not in ("foot", "mtb", "atv", "vehicle"):
-            return jsonify({"status": "error", "message": "mode must be foot, mtb, atv, or vehicle"}), 400
+        if mode not in ("auto", "foot", "mtb", "atv", "vehicle"):
+            return jsonify({"status": "error", "message": "mode must be auto, foot, mtb, atv, or vehicle"}), 400
 
         boundary_mode = data.get("boundary_mode", "pragmatic")
         if boundary_mode not in ("strict", "pragmatic", "emergency"):
