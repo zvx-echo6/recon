@@ -7,7 +7,10 @@ Entry points are extracted from OSM highways and stored in /mnt/nav/navi.db.
 The pathfinder routes from a wilderness start to the nearest entry point,
 then Valhalla completes the route to the destination.
 
-Supports four travel modes: foot, mtb, atv, vehicle.
+IMPORTANT: The wilderness segment ALWAYS uses foot mode for pathfinding.
+The user's selected mode affects:
+  1. Which entry points are valid (foot=any, mtb=tracks+roads, vehicle=roads only)
+  2. The Valhalla costing profile for the network segment
 """
 import json
 import math
@@ -49,6 +52,19 @@ MODE_TO_COSTING = {
     "mtb": "bicycle",
     "atv": "auto",
     "vehicle": "auto",
+}
+
+# Mode to valid entry point highway classes
+# foot = any trail/track/road, mtb = tracks and roads, vehicle = roads only
+MODE_TO_VALID_HIGHWAYS = {
+    "foot": {"primary", "secondary", "tertiary", "unclassified", "residential",
+             "service", "track", "path", "footway", "bridleway"},
+    "mtb": {"primary", "secondary", "tertiary", "unclassified", "residential",
+            "service", "track"},
+    "atv": {"primary", "secondary", "tertiary", "unclassified", "residential",
+            "service", "track"},
+    "vehicle": {"primary", "secondary", "tertiary", "unclassified", "residential",
+                "service"},
 }
 
 
@@ -122,8 +138,16 @@ class EntryPointIndex:
 
         return [dict(row) for row in cur.fetchall()]
 
-    def query_radius(self, lat: float, lon: float, radius_km: float) -> List[Dict]:
-        """Query entry points within radius of a point."""
+    def query_radius(self, lat: float, lon: float, radius_km: float,
+                     valid_highways: Optional[set] = None) -> List[Dict]:
+        """
+        Query entry points within radius of a point.
+
+        Args:
+            lat, lon: Center point
+            radius_km: Search radius in kilometers
+            valid_highways: Optional set of valid highway classes to filter by
+        """
         lat_delta = radius_km / 111.0
         lon_delta = radius_km / (111.0 * math.cos(math.radians(lat)))
 
@@ -134,6 +158,10 @@ class EntryPointIndex:
 
         result = []
         for p in points:
+            # Filter by highway class if specified
+            if valid_highways and p['highway_class'] not in valid_highways:
+                continue
+
             dist = haversine_distance(lat, lon, p['lat'], p['lon'])
             if dist <= radius_km * 1000:
                 p['distance_m'] = dist
@@ -262,7 +290,8 @@ class OffrouteRouter:
     """
     OFFROUTE Router — orchestrates wilderness pathfinding and Valhalla stitching.
 
-    Supports modes: foot, mtb, atv, vehicle
+    IMPORTANT: Wilderness segment ALWAYS uses foot mode for pathfinding.
+    User's mode affects entry point selection and Valhalla costing only.
     """
 
     def __init__(self):
@@ -301,8 +330,13 @@ class OffrouteRouter:
         Args:
             start_lat, start_lon: Starting coordinates (wilderness)
             end_lat, end_lon: Destination coordinates
-            mode: Travel mode (foot, mtb, atv, vehicle)
+            mode: Travel mode (foot, mtb, atv, vehicle) - affects entry points and network routing
             boundary_mode: How to handle private land (strict, pragmatic, emergency)
+
+        IMPORTANT: Wilderness pathfinding ALWAYS uses foot mode.
+        The user's mode only affects:
+          1. Which entry points are valid targets
+          2. The Valhalla costing for the network segment
 
         Returns a GeoJSON FeatureCollection with wilderness and network segments.
         """
@@ -318,17 +352,29 @@ class OffrouteRouter:
                 "message": "Trail entry point index not built. Run build_entry_index() first."
             }
 
-        # Find entry points near start (limit to nearest 10 to control bbox size)
+        # Get valid highway classes for this mode
+        valid_highways = MODE_TO_VALID_HIGHWAYS.get(mode)
+
+        # Find entry points near start, filtered by mode
         MAX_ENTRY_POINTS = 10
-        entry_points = self.entry_index.query_radius(start_lat, start_lon, DEFAULT_SEARCH_RADIUS_KM)
+        entry_points = self.entry_index.query_radius(
+            start_lat, start_lon, DEFAULT_SEARCH_RADIUS_KM, valid_highways
+        )
 
         if not entry_points:
-            entry_points = self.entry_index.query_radius(start_lat, start_lon, EXPANDED_SEARCH_RADIUS_KM)
+            # Try expanded radius
+            entry_points = self.entry_index.query_radius(
+                start_lat, start_lon, EXPANDED_SEARCH_RADIUS_KM, valid_highways
+            )
             if not entry_points:
-                return {
-                    "status": "error",
-                    "message": f"No trail entry points found within {EXPANDED_SEARCH_RADIUS_KM}km of start"
-                }
+                # For non-foot modes, the error is about no suitable roads/trails
+                if mode == "vehicle":
+                    msg = f"No roads found within {EXPANDED_SEARCH_RADIUS_KM}km. Try a different mode."
+                elif mode in ("mtb", "atv"):
+                    msg = f"No tracks or roads found within {EXPANDED_SEARCH_RADIUS_KM}km. Try foot mode."
+                else:
+                    msg = f"No trail entry points found within {EXPANDED_SEARCH_RADIUS_KM}km of start."
+                return {"status": "error", "message": msg}
 
         # Limit to nearest entry points to prevent huge bounding boxes
         entry_points = entry_points[:MAX_ENTRY_POINTS]
@@ -392,15 +438,6 @@ class OffrouteRouter:
             target_shape=elevation.shape
         )
 
-        # Load wilderness (if available and mode requires it)
-        wilderness = None
-        if self.wilderness_reader is not None and mode in ("mtb", "atv", "vehicle"):
-            wilderness = self.wilderness_reader.get_wilderness_grid(
-                south=bbox["south"], north=bbox["north"],
-                west=bbox["west"], east=bbox["east"],
-                target_shape=elevation.shape
-            )
-
         # Load trails
         trails = self.trail_reader.get_trails_grid(
             south=bbox["south"], north=bbox["north"],
@@ -408,23 +445,11 @@ class OffrouteRouter:
             target_shape=elevation.shape
         )
 
-        # Load MVUM access data (only for motorized modes)
-        # MVUM is motor-vehicle specific — foot mode skips entirely
-        mvum = None
-        if mode in ("mtb", "atv", "vehicle"):
-            try:
-                mvum = get_mvum_access_grid(
-                    south=bbox["south"], north=bbox["north"],
-                    west=bbox["west"], east=bbox["east"],
-                    target_shape=elevation.shape,
-                    mode=mode,
-                    check_date=None,  # TODO: accept date parameter
-                )
-            except Exception as e:
-                # MVUM data may not be available - continue without it
-                pass
+        # WILDERNESS PATHFINDING ALWAYS USES FOOT MODE
+        # This is the key change: we don't load wilderness grid or MVUM for pathfinding
+        # because foot mode can traverse wilderness and doesn't need motor-vehicle access
 
-        # Compute cost grid with mode-specific parameters
+        # Compute cost grid with FOOT MODE (always for wilderness segment)
         cost = compute_cost_grid(
             elevation,
             cell_size_m=meta["cell_size_m"],
@@ -432,15 +457,14 @@ class OffrouteRouter:
             friction_raw=friction_raw,
             trails=trails,
             barriers=barriers,
-            wilderness=wilderness,
-            mvum=mvum,
+            wilderness=None,  # Foot mode ignores wilderness restrictions
+            mvum=None,        # Foot mode doesn't use MVUM
             boundary_mode=boundary_mode,
-            mode=mode,
+            mode="foot",      # ALWAYS foot for wilderness pathfinding
         )
 
         # Free intermediate arrays to reduce memory before MCP
-        # Note: Keep trails, barriers, and mvum - needed for path statistics
-        del friction_mult, friction_raw, wilderness
+        del friction_mult, friction_raw
         import gc
         gc.collect()
 
@@ -489,7 +513,6 @@ class OffrouteRouter:
         elevations = []
         trail_values = []
         barrier_crossings = 0
-        mvum_closed_crossings = 0
 
         for row, col in path_indices:
             lat, lon = self.dem_reader.pixel_to_latlon(row, col, meta)
@@ -498,8 +521,6 @@ class OffrouteRouter:
             trail_values.append(trails[row, col])
             if barriers[row, col] == 255:
                 barrier_crossings += 1
-            if mvum is not None and mvum[row, col] == 255:
-                mvum_closed_crossings += 1
 
         # Calculate stats
         wilderness_distance_m = 0
@@ -518,10 +539,8 @@ class OffrouteRouter:
         total_cells = len(trail_arr)
         on_trail_pct = float(100 * on_trail_cells / total_cells) if total_cells > 0 else 0
 
-        # Free trails, barriers, and mvum now that path stats are computed
+        # Free trails and barriers
         del trails, barriers
-        if mvum is not None:
-            del mvum
 
         # Entry point
         entry_lat = best_entry["entry_point"]["lat"]
@@ -529,7 +548,7 @@ class OffrouteRouter:
         entry_class = best_entry["entry_point"]["highway_class"]
         entry_name = best_entry["entry_point"].get("name", "")
 
-        # Call Valhalla
+        # Call Valhalla with USER'S SELECTED MODE (not foot)
         valhalla_costing = MODE_TO_COSTING.get(mode, "pedestrian")
 
         valhalla_request = {
@@ -595,8 +614,7 @@ class OffrouteRouter:
                 "on_trail_pct": on_trail_pct,
                 "cell_count": total_cells,
                 "barrier_crossings": barrier_crossings,
-                "mvum_closed_crossings": mvum_closed_crossings,
-                "mode": mode,
+                "wilderness_mode": "foot",  # Always foot for wilderness
             },
             "geometry": {"type": "LineString", "coordinates": wilderness_coords}
         }
@@ -610,6 +628,7 @@ class OffrouteRouter:
                     "distance_km": network_segment["distance_km"],
                     "duration_minutes": network_segment["duration_minutes"],
                     "maneuvers": network_segment["maneuvers"],
+                    "network_mode": mode,  # User's selected mode
                 },
                 "geometry": {"type": "LineString", "coordinates": network_segment["coordinates"]}
             }
@@ -621,7 +640,12 @@ class OffrouteRouter:
 
         combined_feature = {
             "type": "Feature",
-            "properties": {"segment_type": "combined", "mode": mode, "boundary_mode": boundary_mode},
+            "properties": {
+                "segment_type": "combined",
+                "wilderness_mode": "foot",
+                "network_mode": mode,
+                "boundary_mode": boundary_mode
+            },
             "geometry": {"type": "LineString", "coordinates": combined_coords}
         }
         features.append(combined_feature)
@@ -644,9 +668,9 @@ class OffrouteRouter:
             "network_duration_minutes": float(network_segment["duration_minutes"]) if network_segment else 0,
             "on_trail_pct": on_trail_pct,
             "barrier_crossings": barrier_crossings,
-            "mvum_closed_crossings": mvum_closed_crossings,
             "boundary_mode": boundary_mode,
-            "mode": mode,
+            "wilderness_mode": "foot",  # Always foot
+            "network_mode": mode,        # User's selection
             "entry_point": {
                 "lat": entry_lat, "lon": entry_lon,
                 "highway_class": entry_class, "name": entry_name,
@@ -730,6 +754,7 @@ if __name__ == "__main__":
 
     elif len(sys.argv) > 1 and sys.argv[1] == "test":
         print("Testing router (all modes)...")
+        print("NOTE: Wilderness always uses foot mode. User mode affects entry points + network.")
 
         router = OffrouteRouter()
 
@@ -746,8 +771,8 @@ if __name__ == "__main__":
 
             if result["status"] == "ok":
                 s = result["summary"]
-                print(f"  Wilderness: {s['wilderness_distance_km']:.2f} km, {s['wilderness_effort_minutes']:.1f} min")
-                print(f"  Network: {s['network_distance_km']:.2f} km, {s['network_duration_minutes']:.1f} min")
+                print(f"  Wilderness: {s['wilderness_distance_km']:.2f} km, {s['wilderness_effort_minutes']:.1f} min (foot)")
+                print(f"  Network: {s['network_distance_km']:.2f} km, {s['network_duration_minutes']:.1f} min ({mode})")
                 print(f"  On-trail: {s['on_trail_pct']:.1f}%")
                 print(f"  Entry: {s['entry_point']['highway_class']}")
             else:
