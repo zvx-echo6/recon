@@ -2722,3 +2722,80 @@ def api_auth_whoami():
         'authenticated': False,
         'username': None,
     })
+
+
+# ── OFFROUTE API ──
+
+@app.route("/api/offroute", methods=["POST"])
+def api_offroute():
+    """
+    Off-network routing from wilderness to destination.
+
+    Request body:
+        {
+            "start": [lat, lon],
+            "end": [lat, lon],
+            "mode": "foot" | "mtb" | "atv",  (default: "foot")
+            "boundary_mode": "strict" | "pragmatic" | "emergency"  (default: "pragmatic")
+        }
+
+    Response:
+        {
+            "status": "ok",
+            "route": { GeoJSON FeatureCollection with wilderness + network segments },
+            "summary": { total_distance_km, total_effort_minutes, ... }
+        }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No JSON body provided"}), 400
+
+        # Parse coordinates
+        start = data.get("start")
+        end = data.get("end")
+
+        if not start or not end:
+            return jsonify({"status": "error", "message": "Missing start or end coordinates"}), 400
+
+        if not isinstance(start, (list, tuple)) or len(start) != 2:
+            return jsonify({"status": "error", "message": "start must be [lat, lon]"}), 400
+        if not isinstance(end, (list, tuple)) or len(end) != 2:
+            return jsonify({"status": "error", "message": "end must be [lat, lon]"}), 400
+
+        start_lat, start_lon = float(start[0]), float(start[1])
+        end_lat, end_lon = float(end[0]), float(end[1])
+
+        # Parse options
+        mode = data.get("mode", "foot")
+        if mode not in ("foot", "mtb", "atv"):
+            return jsonify({"status": "error", "message": "mode must be foot, mtb, or atv"}), 400
+
+        boundary_mode = data.get("boundary_mode", "pragmatic")
+        if boundary_mode not in ("strict", "pragmatic", "emergency"):
+            return jsonify({"status": "error", "message": "boundary_mode must be strict, pragmatic, or emergency"}), 400
+
+        # Import and run router
+        from .offroute.router import OffrouteRouter
+
+        router = OffrouteRouter()
+        try:
+            result = router.route(
+                start_lat=start_lat,
+                start_lon=start_lon,
+                end_lat=end_lat,
+                end_lon=end_lon,
+                mode=mode,
+                boundary_mode=boundary_mode
+            )
+        finally:
+            router.close()
+
+        if result.get("status") == "error":
+            return jsonify(result), 400
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.exception("Offroute error")
+        return jsonify({"status": "error", "message": str(e)}), 500
