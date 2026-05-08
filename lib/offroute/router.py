@@ -54,6 +54,7 @@ OFF_NETWORK_THRESHOLD_M = 500
 
 # Mode to Valhalla costing mapping
 MODE_TO_COSTING = {
+    "auto": "auto",
     "foot": "pedestrian",
     "mtb": "bicycle",
     "atv": "auto",
@@ -63,6 +64,8 @@ MODE_TO_COSTING = {
 # Mode to valid entry point highway classes
 # foot = any trail/track/road, mtb = tracks and roads, vehicle = roads only
 MODE_TO_VALID_HIGHWAYS = {
+    "auto": {"primary", "secondary", "tertiary", "unclassified", "residential",
+             "service"},
     "foot": {"primary", "secondary", "tertiary", "unclassified", "residential",
              "service", "track", "path", "footway", "bridleway"},
     "mtb": {"primary", "secondary", "tertiary", "unclassified", "residential",
