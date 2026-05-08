@@ -1,17 +1,20 @@
 """
-OFFROUTE Router — Wilderness to network path orchestration.
+OFFROUTE Router — Bidirectional wilderness-to-network path orchestration.
 
-Connects the raster pathfinder (wilderness segment) to Valhalla (on-network segment).
+Supports four routing scenarios:
+  A: off-network start → on-network end (wilderness then Valhalla)
+  B: off-network start → off-network end (wilderness, Valhalla, wilderness)
+  C: on-network start → off-network end (Valhalla then wilderness)
+  D: on-network start → on-network end (pure Valhalla passthrough)
 
-Entry points are extracted from OSM highways and stored in /mnt/nav/navi.db.
-The pathfinder routes from a wilderness start to the nearest entry point,
-then Valhalla completes the route to the destination.
+Off-network detection: Valhalla /locate snap distance > 500m = off-network.
 
 IMPORTANT: The wilderness segment ALWAYS uses foot mode for pathfinding.
 The user's selected mode affects:
   1. Which entry points are valid (foot=any, mtb=tracks+roads, vehicle=roads only)
   2. The Valhalla costing profile for the network segment
 """
+import gc
 import json
 import math
 import sqlite3
@@ -45,6 +48,9 @@ EXPANDED_SEARCH_RADIUS_KM = 100
 
 # Memory limit
 MEMORY_LIMIT_GB = 12
+
+# Off-network detection threshold (meters)
+OFF_NETWORK_THRESHOLD_M = 500
 
 # Mode to Valhalla costing mapping
 MODE_TO_COSTING = {
@@ -290,6 +296,12 @@ class OffrouteRouter:
     """
     OFFROUTE Router — orchestrates wilderness pathfinding and Valhalla stitching.
 
+    Supports four scenarios:
+      A: off-network start → on-network end
+      B: off-network start → off-network end
+      C: on-network start → off-network end
+      D: on-network start → on-network end (pure Valhalla)
+
     IMPORTANT: Wilderness segment ALWAYS uses foot mode for pathfinding.
     User's mode affects entry point selection and Valhalla costing only.
     """
@@ -315,6 +327,49 @@ class OffrouteRouter:
         if self.trail_reader is None:
             self.trail_reader = TrailReader()
 
+    def _locate_on_network(self, lat: float, lon: float, mode: str) -> Dict:
+        """
+        Check if a point is on the routable network using Valhalla's /locate.
+
+        Returns:
+            {
+                "on_network": bool,
+                "snap_distance_m": float,
+                "snapped_lat": float,
+                "snapped_lon": float
+            }
+        """
+        costing = MODE_TO_COSTING.get(mode, "pedestrian")
+        try:
+            resp = requests.post(
+                f"{VALHALLA_URL}/locate",
+                json={"locations": [{"lat": lat, "lon": lon}], "costing": costing},
+                timeout=10
+            )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and len(data) > 0 and data[0].get("edges"):
+                    edge = data[0]["edges"][0]
+                    snap_lat = edge.get("correlated_lat", lat)
+                    snap_lon = edge.get("correlated_lon", lon)
+                    snap_dist = haversine_distance(lat, lon, snap_lat, snap_lon)
+                    return {
+                        "on_network": snap_dist <= OFF_NETWORK_THRESHOLD_M,
+                        "snap_distance_m": snap_dist,
+                        "snapped_lat": snap_lat,
+                        "snapped_lon": snap_lon
+                    }
+        except Exception:
+            pass
+
+        return {
+            "on_network": False,
+            "snap_distance_m": float('inf'),
+            "snapped_lat": lat,
+            "snapped_lon": lon
+        }
+
     def route(
         self,
         start_lat: float,
@@ -325,25 +380,166 @@ class OffrouteRouter:
         boundary_mode: Literal["strict", "pragmatic", "emergency"] = "pragmatic"
     ) -> Dict:
         """
-        Route from a wilderness start point to a destination.
+        Route between two points, handling all four scenarios.
+
+        Scenarios:
+            A: off-network start → on-network end (wilderness then network)
+            B: off-network start → off-network end (wilderness, network, wilderness)
+            C: on-network start → off-network end (network then wilderness)
+            D: on-network start → on-network end (pure network)
 
         Args:
-            start_lat, start_lon: Starting coordinates (wilderness)
+            start_lat, start_lon: Starting coordinates
             end_lat, end_lon: Destination coordinates
-            mode: Travel mode (foot, mtb, atv, vehicle) - affects entry points and network routing
+            mode: Travel mode (foot, mtb, atv, vehicle)
             boundary_mode: How to handle private land (strict, pragmatic, emergency)
 
-        IMPORTANT: Wilderness pathfinding ALWAYS uses foot mode.
-        The user's mode only affects:
-          1. Which entry points are valid targets
-          2. The Valhalla costing for the network segment
-
-        Returns a GeoJSON FeatureCollection with wilderness and network segments.
+        Returns a GeoJSON FeatureCollection with route segments.
         """
-        t0 = time.time()
-
         if mode not in MODE_TO_COSTING:
             return {"status": "error", "message": f"Unknown mode: {mode}"}
+
+        # Detect network status for both endpoints
+        start_status = self._locate_on_network(start_lat, start_lon, mode)
+        end_status = self._locate_on_network(end_lat, end_lon, mode)
+
+        start_off_network = not start_status["on_network"]
+        end_off_network = not end_status["on_network"]
+
+        # Dispatch to appropriate handler
+        if not start_off_network and not end_off_network:
+            # Scenario D: on-network → on-network (pure Valhalla)
+            return self._route_D_network_only(
+                start_lat, start_lon, end_lat, end_lon, mode
+            )
+        elif not start_off_network and end_off_network:
+            # Scenario C: on-network → off-network
+            return self._route_C_network_to_wilderness(
+                start_lat, start_lon, end_lat, end_lon, mode, boundary_mode
+            )
+        elif start_off_network and not end_off_network:
+            # Scenario A: off-network → on-network
+            return self._route_A_wilderness_to_network(
+                start_lat, start_lon, end_lat, end_lon, mode, boundary_mode
+            )
+        else:
+            # Scenario B: off-network → off-network
+            return self._route_B_wilderness_both(
+                start_lat, start_lon, end_lat, end_lon, mode, boundary_mode
+            )
+
+    def _route_D_network_only(
+        self,
+        start_lat: float, start_lon: float,
+        end_lat: float, end_lon: float,
+        mode: str
+    ) -> Dict:
+        """
+        Scenario D: Both endpoints on-network. Pure Valhalla routing.
+        """
+        t0 = time.time()
+        costing = MODE_TO_COSTING.get(mode, "pedestrian")
+
+        valhalla_request = {
+            "locations": [
+                {"lat": start_lat, "lon": start_lon},
+                {"lat": end_lat, "lon": end_lon}
+            ],
+            "costing": costing,
+            "directions_options": {"units": "kilometers"}
+        }
+
+        try:
+            resp = requests.post(f"{VALHALLA_URL}/route", json=valhalla_request, timeout=30)
+
+            if resp.status_code != 200:
+                return {
+                    "status": "error",
+                    "message": f"Network routing failed: {resp.text[:200]}"
+                }
+
+            valhalla_data = resp.json()
+            trip = valhalla_data.get("trip", {})
+            legs = trip.get("legs", [])
+
+            if not legs:
+                return {"status": "error", "message": "No route found"}
+
+            leg = legs[0]
+            shape = leg.get("shape", "")
+            network_coords = self._decode_polyline(shape)
+
+            maneuvers = []
+            for m in leg.get("maneuvers", []):
+                maneuvers.append({
+                    "instruction": m.get("instruction", ""),
+                    "type": m.get("type", 0),
+                    "distance_km": m.get("length", 0),
+                    "time_seconds": m.get("time", 0),
+                    "street_names": m.get("street_names", []),
+                })
+
+            summary = trip.get("summary", {})
+            distance_km = summary.get("length", 0)
+            duration_min = summary.get("time", 0) / 60
+
+            # Build response in same format as wilderness routes
+            network_feature = {
+                "type": "Feature",
+                "properties": {
+                    "segment_type": "network",
+                    "distance_km": distance_km,
+                    "duration_minutes": duration_min,
+                    "maneuvers": maneuvers,
+                    "network_mode": mode,
+                },
+                "geometry": {"type": "LineString", "coordinates": network_coords}
+            }
+
+            combined_feature = {
+                "type": "Feature",
+                "properties": {
+                    "segment_type": "combined",
+                    "network_mode": mode,
+                },
+                "geometry": {"type": "LineString", "coordinates": network_coords}
+            }
+
+            geojson = {"type": "FeatureCollection", "features": [network_feature, combined_feature]}
+
+            result = {
+                "status": "ok",
+                "route": geojson,
+                "summary": {
+                    "total_distance_km": float(distance_km),
+                    "total_effort_minutes": float(duration_min),
+                    "wilderness_distance_km": 0.0,
+                    "wilderness_effort_minutes": 0.0,
+                    "network_distance_km": float(distance_km),
+                    "network_duration_minutes": float(duration_min),
+                    "on_trail_pct": 100.0,
+                    "barrier_crossings": 0,
+                    "network_mode": mode,
+                    "scenario": "D",
+                    "computation_time_s": time.time() - t0,
+                }
+            }
+            return result
+
+        except Exception as e:
+            return {"status": "error", "message": f"Network routing failed: {e}"}
+
+    def _route_A_wilderness_to_network(
+        self,
+        start_lat: float, start_lon: float,
+        end_lat: float, end_lon: float,
+        mode: str, boundary_mode: str
+    ) -> Dict:
+        """
+        Scenario A: Off-network start → on-network end.
+        Wilderness pathfinding from start to entry point, then Valhalla to end.
+        """
+        t0 = time.time()
 
         # Ensure entry point index exists
         if not self.entry_index.table_exists() or self.entry_index.get_entry_point_count() == 0:
@@ -362,12 +558,10 @@ class OffrouteRouter:
         )
 
         if not entry_points:
-            # Try expanded radius
             entry_points = self.entry_index.query_radius(
                 start_lat, start_lon, EXPANDED_SEARCH_RADIUS_KM, valid_highways
             )
             if not entry_points:
-                # For non-foot modes, the error is about no suitable roads/trails
                 if mode == "vehicle":
                     msg = f"No roads found within {EXPANDED_SEARCH_RADIUS_KM}km. Try a different mode."
                 elif mode in ("mtb", "atv"):
@@ -376,13 +570,243 @@ class OffrouteRouter:
                     msg = f"No trail entry points found within {EXPANDED_SEARCH_RADIUS_KM}km of start."
                 return {"status": "error", "message": msg}
 
-        # Limit to nearest entry points to prevent huge bounding boxes
         entry_points = entry_points[:MAX_ENTRY_POINTS]
 
-        # Build bbox with max size limit (prevent OOM on large areas)
-        MAX_BBOX_DEGREES = 0.5  # ~55km at mid-latitudes
-        all_lats = [start_lat, end_lat] + [p["lat"] for p in entry_points]
-        all_lons = [start_lon, end_lon] + [p["lon"] for p in entry_points]
+        # Run wilderness pathfinding
+        wilderness_result = self._pathfind_wilderness(
+            start_lat, start_lon, end_lat, end_lon,
+            entry_points, boundary_mode, "start"
+        )
+
+        if wilderness_result.get("status") == "error":
+            return wilderness_result
+
+        # Extract results
+        wilderness_coords = wilderness_result["coords"]
+        wilderness_stats = wilderness_result["stats"]
+        best_entry = wilderness_result["entry_point"]
+
+        entry_lat = best_entry["lat"]
+        entry_lon = best_entry["lon"]
+
+        # Call Valhalla from entry point to destination
+        network_result = self._valhalla_route(entry_lat, entry_lon, end_lat, end_lon, mode)
+
+        # Build response
+        return self._build_response(
+            wilderness_start=wilderness_coords,
+            wilderness_start_stats=wilderness_stats,
+            network_segment=network_result.get("segment"),
+            wilderness_end=None,
+            wilderness_end_stats=None,
+            mode=mode,
+            boundary_mode=boundary_mode,
+            entry_start=best_entry,
+            entry_end=None,
+            scenario="A",
+            t0=t0,
+            valhalla_error=network_result.get("error")
+        )
+
+    def _route_C_network_to_wilderness(
+        self,
+        start_lat: float, start_lon: float,
+        end_lat: float, end_lon: float,
+        mode: str, boundary_mode: str
+    ) -> Dict:
+        """
+        Scenario C: On-network start → off-network end.
+        Valhalla from start to entry point, then wilderness pathfinding to end.
+        """
+        t0 = time.time()
+
+        if not self.entry_index.table_exists() or self.entry_index.get_entry_point_count() == 0:
+            return {
+                "status": "error",
+                "message": "Trail entry point index not built. Run build_entry_index() first."
+            }
+
+        valid_highways = MODE_TO_VALID_HIGHWAYS.get(mode)
+
+        # Find entry points near END (destination)
+        MAX_ENTRY_POINTS = 10
+        entry_points = self.entry_index.query_radius(
+            end_lat, end_lon, DEFAULT_SEARCH_RADIUS_KM, valid_highways
+        )
+
+        if not entry_points:
+            entry_points = self.entry_index.query_radius(
+                end_lat, end_lon, EXPANDED_SEARCH_RADIUS_KM, valid_highways
+            )
+            if not entry_points:
+                if mode == "vehicle":
+                    msg = f"No roads found within {EXPANDED_SEARCH_RADIUS_KM}km of destination. Try a different mode."
+                elif mode in ("mtb", "atv"):
+                    msg = f"No tracks or roads found within {EXPANDED_SEARCH_RADIUS_KM}km of destination. Try foot mode."
+                else:
+                    msg = f"No trail entry points found within {EXPANDED_SEARCH_RADIUS_KM}km of destination."
+                return {"status": "error", "message": msg}
+
+        entry_points = entry_points[:MAX_ENTRY_POINTS]
+
+        # Run wilderness pathfinding FROM END toward entry points
+        wilderness_result = self._pathfind_wilderness(
+            end_lat, end_lon, start_lat, start_lon,
+            entry_points, boundary_mode, "end"
+        )
+
+        if wilderness_result.get("status") == "error":
+            return wilderness_result
+
+        # The path is from end→entry, reverse it for display (entry→end)
+        wilderness_coords = list(reversed(wilderness_result["coords"]))
+        wilderness_stats = wilderness_result["stats"]
+        best_entry = wilderness_result["entry_point"]
+
+        entry_lat = best_entry["lat"]
+        entry_lon = best_entry["lon"]
+
+        # Call Valhalla from start to entry point
+        network_result = self._valhalla_route(start_lat, start_lon, entry_lat, entry_lon, mode)
+
+        # Build response (network first, then wilderness)
+        return self._build_response(
+            wilderness_start=None,
+            wilderness_start_stats=None,
+            network_segment=network_result.get("segment"),
+            wilderness_end=wilderness_coords,
+            wilderness_end_stats=wilderness_stats,
+            mode=mode,
+            boundary_mode=boundary_mode,
+            entry_start=None,
+            entry_end=best_entry,
+            scenario="C",
+            t0=t0,
+            valhalla_error=network_result.get("error")
+        )
+
+    def _route_B_wilderness_both(
+        self,
+        start_lat: float, start_lon: float,
+        end_lat: float, end_lon: float,
+        mode: str, boundary_mode: str
+    ) -> Dict:
+        """
+        Scenario B: Off-network start → off-network end.
+        Wilderness from start to entry_A, Valhalla entry_A to entry_B, wilderness from entry_B to end.
+        """
+        t0 = time.time()
+
+        if not self.entry_index.table_exists() or self.entry_index.get_entry_point_count() == 0:
+            return {
+                "status": "error",
+                "message": "Trail entry point index not built. Run build_entry_index() first."
+            }
+
+        valid_highways = MODE_TO_VALID_HIGHWAYS.get(mode)
+        MAX_ENTRY_POINTS = 10
+
+        # Find entry points near START
+        entry_points_start = self.entry_index.query_radius(
+            start_lat, start_lon, DEFAULT_SEARCH_RADIUS_KM, valid_highways
+        )
+        if not entry_points_start:
+            entry_points_start = self.entry_index.query_radius(
+                start_lat, start_lon, EXPANDED_SEARCH_RADIUS_KM, valid_highways
+            )
+        if not entry_points_start:
+            return {"status": "error", "message": f"No entry points found near start within {EXPANDED_SEARCH_RADIUS_KM}km."}
+        entry_points_start = entry_points_start[:MAX_ENTRY_POINTS]
+
+        # Find entry points near END
+        entry_points_end = self.entry_index.query_radius(
+            end_lat, end_lon, DEFAULT_SEARCH_RADIUS_KM, valid_highways
+        )
+        if not entry_points_end:
+            entry_points_end = self.entry_index.query_radius(
+                end_lat, end_lon, EXPANDED_SEARCH_RADIUS_KM, valid_highways
+            )
+        if not entry_points_end:
+            return {"status": "error", "message": f"No entry points found near destination within {EXPANDED_SEARCH_RADIUS_KM}km."}
+        entry_points_end = entry_points_end[:MAX_ENTRY_POINTS]
+
+        # Phase 1: Wilderness pathfinding from START
+        wilderness_start_result = self._pathfind_wilderness(
+            start_lat, start_lon, end_lat, end_lon,
+            entry_points_start, boundary_mode, "start"
+        )
+
+        if wilderness_start_result.get("status") == "error":
+            return wilderness_start_result
+
+        wilderness_start_coords = wilderness_start_result["coords"]
+        wilderness_start_stats = wilderness_start_result["stats"]
+        entry_A = wilderness_start_result["entry_point"]
+
+        # Phase 2: Wilderness pathfinding from END (run after freeing phase 1 memory)
+        wilderness_end_result = self._pathfind_wilderness(
+            end_lat, end_lon, start_lat, start_lon,
+            entry_points_end, boundary_mode, "end"
+        )
+
+        if wilderness_end_result.get("status") == "error":
+            return wilderness_end_result
+
+        # Reverse the end wilderness path (it's end→entry, we want entry→end for display)
+        wilderness_end_coords = list(reversed(wilderness_end_result["coords"]))
+        wilderness_end_stats = wilderness_end_result["stats"]
+        entry_B = wilderness_end_result["entry_point"]
+
+        # Phase 3: Valhalla from entry_A to entry_B
+        network_result = self._valhalla_route(
+            entry_A["lat"], entry_A["lon"],
+            entry_B["lat"], entry_B["lon"],
+            mode
+        )
+
+        # Build response
+        return self._build_response(
+            wilderness_start=wilderness_start_coords,
+            wilderness_start_stats=wilderness_start_stats,
+            network_segment=network_result.get("segment"),
+            wilderness_end=wilderness_end_coords,
+            wilderness_end_stats=wilderness_end_stats,
+            mode=mode,
+            boundary_mode=boundary_mode,
+            entry_start=entry_A,
+            entry_end=entry_B,
+            scenario="B",
+            t0=t0,
+            valhalla_error=network_result.get("error")
+        )
+
+    def _pathfind_wilderness(
+        self,
+        origin_lat: float, origin_lon: float,
+        dest_lat: float, dest_lon: float,
+        entry_points: List[Dict],
+        boundary_mode: str,
+        label: str
+    ) -> Dict:
+        """
+        Run MCP wilderness pathfinding from origin toward entry points.
+
+        Args:
+            origin_lat, origin_lon: Starting point for pathfinding
+            dest_lat, dest_lon: Ultimate destination (for bbox calculation)
+            entry_points: List of candidate entry points
+            boundary_mode: How to handle barriers
+            label: "start" or "end" for error messages
+
+        Returns:
+            {"status": "ok", "coords": [...], "stats": {...}, "entry_point": {...}}
+            or {"status": "error", "message": "..."}
+        """
+        # Build bbox - only include origin and entry points, NOT distant destination
+        # The destination is handled by Valhalla, wilderness only needs to reach entry points
+        MAX_BBOX_DEGREES = 0.5
+        all_lats = [origin_lat] + [p["lat"] for p in entry_points]
+        all_lons = [origin_lon] + [p["lon"] for p in entry_points]
 
         padding = 0.05
         bbox = {
@@ -392,18 +816,16 @@ class OffrouteRouter:
             "east": max(all_lons) + padding,
         }
 
-        # Clamp bbox size to prevent memory exhaustion
+        # Clamp bbox size, centering on origin
         lat_span = bbox["north"] - bbox["south"]
         lon_span = bbox["east"] - bbox["west"]
         if lat_span > MAX_BBOX_DEGREES or lon_span > MAX_BBOX_DEGREES:
-            center_lat = (bbox["south"] + bbox["north"]) / 2
-            center_lon = (bbox["west"] + bbox["east"]) / 2
             half_span = MAX_BBOX_DEGREES / 2
             bbox = {
-                "south": center_lat - half_span,
-                "north": center_lat + half_span,
-                "west": center_lon - half_span,
-                "east": center_lon + half_span,
+                "south": origin_lat - half_span,
+                "north": origin_lat + half_span,
+                "west": origin_lon - half_span,
+                "east": origin_lon + half_span,
             }
 
         # Initialize readers
@@ -416,14 +838,14 @@ class OffrouteRouter:
                 west=bbox["west"], east=bbox["east"],
             )
         except Exception as e:
-            return {"status": "error", "message": f"Failed to load elevation: {e}"}
+            return {"status": "error", "message": f"Failed to load elevation for {label}: {e}"}
 
         # Check memory
         mem = check_memory_usage()
         if mem > MEMORY_LIMIT_GB:
             return {"status": "error", "message": f"Memory limit exceeded: {mem:.1f}GB > {MEMORY_LIMIT_GB}GB"}
 
-        # Load friction (both processed and raw for mode-specific overrides)
+        # Load friction
         friction_raw = self.friction_reader.get_friction_grid(
             south=bbox["south"], north=bbox["north"],
             west=bbox["west"], east=bbox["east"],
@@ -445,11 +867,7 @@ class OffrouteRouter:
             target_shape=elevation.shape
         )
 
-        # WILDERNESS PATHFINDING ALWAYS USES FOOT MODE
-        # This is the key change: we don't load wilderness grid or MVUM for pathfinding
-        # because foot mode can traverse wilderness and doesn't need motor-vehicle access
-
-        # Compute cost grid with FOOT MODE (always for wilderness segment)
+        # Compute cost grid (ALWAYS foot mode for wilderness)
         cost = compute_cost_grid(
             elevation,
             cell_size_m=meta["cell_size_m"],
@@ -457,25 +875,24 @@ class OffrouteRouter:
             friction_raw=friction_raw,
             trails=trails,
             barriers=barriers,
-            wilderness=None,  # Foot mode ignores wilderness restrictions
-            mvum=None,        # Foot mode doesn't use MVUM
+            wilderness=None,
+            mvum=None,
             boundary_mode=boundary_mode,
-            mode="foot",      # ALWAYS foot for wilderness pathfinding
+            mode="foot",
         )
 
-        # Free intermediate arrays to reduce memory before MCP
+        # Free intermediate arrays
         del friction_mult, friction_raw
-        import gc
         gc.collect()
 
-        # Convert start to pixel coordinates
-        start_row, start_col = self.dem_reader.latlon_to_pixel(start_lat, start_lon, meta)
+        # Convert origin to pixel coordinates
+        origin_row, origin_col = self.dem_reader.latlon_to_pixel(origin_lat, origin_lon, meta)
 
         rows, cols = elevation.shape
-        if not (0 <= start_row < rows and 0 <= start_col < cols):
-            return {"status": "error", "message": "Start point outside grid bounds"}
+        if not (0 <= origin_row < rows and 0 <= origin_col < cols):
+            return {"status": "error", "message": f"{label.capitalize()} point outside grid bounds"}
 
-        # Mark entry points on grid
+        # Map entry points to pixels
         entry_pixels = []
         for ep in entry_points:
             row, col = self.dem_reader.latlon_to_pixel(ep["lat"], ep["lon"], meta)
@@ -483,11 +900,11 @@ class OffrouteRouter:
                 entry_pixels.append({"row": row, "col": col, "entry_point": ep})
 
         if not entry_pixels:
-            return {"status": "error", "message": "No entry points map to grid bounds"}
+            return {"status": "error", "message": f"No entry points map to grid bounds for {label}"}
 
-        # Run MCP pathfinder
+        # Run MCP
         mcp = MCP_Geometric(cost, fully_connected=True)
-        cumulative_costs, traceback = mcp.find_costs([(start_row, start_col)])
+        cumulative_costs, traceback = mcp.find_costs([(origin_row, origin_col)])
 
         # Find nearest reachable entry point
         best_entry = None
@@ -502,66 +919,87 @@ class OffrouteRouter:
         if best_entry is None or np.isinf(best_cost):
             return {
                 "status": "error",
-                "message": "No path found to any entry point (blocked by impassable terrain)"
+                "message": f"No path found from {label} to any entry point (blocked by impassable terrain)"
             }
 
-        # Traceback wilderness path
+        # Traceback path
         path_indices = mcp.traceback((best_entry["row"], best_entry["col"]))
 
-        # Convert to coordinates
-        wilderness_coords = []
+        # Convert to coordinates and collect stats
+        coords = []
         elevations = []
         trail_values = []
         barrier_crossings = 0
 
         for row, col in path_indices:
             lat, lon = self.dem_reader.pixel_to_latlon(row, col, meta)
-            wilderness_coords.append([lon, lat])
+            coords.append([lon, lat])
             elevations.append(elevation[row, col])
             trail_values.append(trails[row, col])
             if barriers[row, col] == 255:
                 barrier_crossings += 1
 
-        # Calculate stats
-        wilderness_distance_m = 0
-        for i in range(1, len(wilderness_coords)):
-            lon1, lat1 = wilderness_coords[i-1]
-            lon2, lat2 = wilderness_coords[i]
-            wilderness_distance_m += haversine_distance(lat1, lon1, lat2, lon2)
+        # Calculate distance
+        distance_m = 0
+        for i in range(1, len(coords)):
+            lon1, lat1 = coords[i-1]
+            lon2, lat2 = coords[i]
+            distance_m += haversine_distance(lat1, lon1, lat2, lon2)
 
+        # Elevation stats
         elev_arr = np.array(elevations)
         elev_diff = np.diff(elev_arr)
-        wilderness_gain = float(np.sum(elev_diff[elev_diff > 0]))
-        wilderness_loss = float(np.sum(np.abs(elev_diff[elev_diff < 0])))
+        elev_gain = float(np.sum(elev_diff[elev_diff > 0]))
+        elev_loss = float(np.sum(np.abs(elev_diff[elev_diff < 0])))
 
+        # Trail stats
         trail_arr = np.array(trail_values)
         on_trail_cells = np.sum(trail_arr > 0)
         total_cells = len(trail_arr)
         on_trail_pct = float(100 * on_trail_cells / total_cells) if total_cells > 0 else 0
 
-        # Free trails and barriers
-        del trails, barriers
+        # Free memory
+        del mcp, cumulative_costs, traceback, cost, trails, barriers, elevation
+        gc.collect()
 
-        # Entry point
-        entry_lat = best_entry["entry_point"]["lat"]
-        entry_lon = best_entry["entry_point"]["lon"]
-        entry_class = best_entry["entry_point"]["highway_class"]
-        entry_name = best_entry["entry_point"].get("name", "")
+        return {
+            "status": "ok",
+            "coords": coords,
+            "stats": {
+                "distance_km": distance_m / 1000,
+                "effort_minutes": best_cost / 60,
+                "elevation_gain_m": elev_gain,
+                "elevation_loss_m": elev_loss,
+                "on_trail_pct": on_trail_pct,
+                "barrier_crossings": barrier_crossings,
+                "cell_count": total_cells,
+            },
+            "entry_point": best_entry["entry_point"]
+        }
 
-        # Call Valhalla with USER'S SELECTED MODE (not foot)
-        valhalla_costing = MODE_TO_COSTING.get(mode, "pedestrian")
+    def _valhalla_route(
+        self,
+        start_lat: float, start_lon: float,
+        end_lat: float, end_lon: float,
+        mode: str
+    ) -> Dict:
+        """
+        Call Valhalla for network routing.
+
+        Returns:
+            {"segment": {...}, "error": None} on success
+            {"segment": None, "error": "..."} on failure
+        """
+        costing = MODE_TO_COSTING.get(mode, "pedestrian")
 
         valhalla_request = {
             "locations": [
-                {"lat": entry_lat, "lon": entry_lon},
+                {"lat": start_lat, "lon": start_lon},
                 {"lat": end_lat, "lon": end_lon}
             ],
-            "costing": valhalla_costing,
+            "costing": costing,
             "directions_options": {"units": "kilometers"}
         }
-
-        network_segment = None
-        valhalla_error = None
 
         try:
             resp = requests.post(f"{VALHALLA_URL}/route", json=valhalla_request, timeout=30)
@@ -574,7 +1012,7 @@ class OffrouteRouter:
                 if legs:
                     leg = legs[0]
                     shape = leg.get("shape", "")
-                    network_coords = self._decode_polyline(shape)
+                    coords = self._decode_polyline(shape)
 
                     maneuvers = []
                     for m in leg.get("maneuvers", []):
@@ -587,96 +1025,183 @@ class OffrouteRouter:
                         })
 
                     summary = trip.get("summary", {})
-                    network_segment = {
-                        "coordinates": network_coords,
-                        "distance_km": summary.get("length", 0),
-                        "duration_minutes": summary.get("time", 0) / 60,
-                        "maneuvers": maneuvers,
+                    return {
+                        "segment": {
+                            "coordinates": coords,
+                            "distance_km": summary.get("length", 0),
+                            "duration_minutes": summary.get("time", 0) / 60,
+                            "maneuvers": maneuvers,
+                        },
+                        "error": None
                     }
-            else:
-                valhalla_error = f"Valhalla returned {resp.status_code}: {resp.text[:200]}"
+
+            return {"segment": None, "error": f"Valhalla returned {resp.status_code}: {resp.text[:200]}"}
 
         except Exception as e:
-            valhalla_error = f"Valhalla request failed: {e}"
+            return {"segment": None, "error": f"Valhalla request failed: {e}"}
 
-        # Build response
+    def _build_response(
+        self,
+        wilderness_start: Optional[List],
+        wilderness_start_stats: Optional[Dict],
+        network_segment: Optional[Dict],
+        wilderness_end: Optional[List],
+        wilderness_end_stats: Optional[Dict],
+        mode: str,
+        boundary_mode: str,
+        entry_start: Optional[Dict],
+        entry_end: Optional[Dict],
+        scenario: str,
+        t0: float,
+        valhalla_error: Optional[str]
+    ) -> Dict:
+        """Build the final GeoJSON response."""
         features = []
 
-        wilderness_feature = {
-            "type": "Feature",
-            "properties": {
-                "segment_type": "wilderness",
-                "effort_minutes": float(best_cost / 60),
-                "distance_km": float(wilderness_distance_m / 1000),
-                "elevation_gain_m": wilderness_gain,
-                "elevation_loss_m": wilderness_loss,
-                "boundary_mode": boundary_mode,
-                "on_trail_pct": on_trail_pct,
-                "cell_count": total_cells,
-                "barrier_crossings": barrier_crossings,
-                "wilderness_mode": "foot",  # Always foot for wilderness
-            },
-            "geometry": {"type": "LineString", "coordinates": wilderness_coords}
-        }
-        features.append(wilderness_feature)
+        # Wilderness start segment
+        if wilderness_start and wilderness_start_stats:
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "segment_type": "wilderness",
+                    "segment_position": "start",
+                    "effort_minutes": float(wilderness_start_stats["effort_minutes"]),
+                    "distance_km": float(wilderness_start_stats["distance_km"]),
+                    "elevation_gain_m": wilderness_start_stats["elevation_gain_m"],
+                    "elevation_loss_m": wilderness_start_stats["elevation_loss_m"],
+                    "boundary_mode": boundary_mode,
+                    "on_trail_pct": wilderness_start_stats["on_trail_pct"],
+                    "barrier_crossings": wilderness_start_stats["barrier_crossings"],
+                    "wilderness_mode": "foot",
+                },
+                "geometry": {"type": "LineString", "coordinates": wilderness_start}
+            })
 
+        # Network segment
         if network_segment:
-            network_feature = {
+            features.append({
                 "type": "Feature",
                 "properties": {
                     "segment_type": "network",
                     "distance_km": network_segment["distance_km"],
                     "duration_minutes": network_segment["duration_minutes"],
                     "maneuvers": network_segment["maneuvers"],
-                    "network_mode": mode,  # User's selected mode
+                    "network_mode": mode,
                 },
                 "geometry": {"type": "LineString", "coordinates": network_segment["coordinates"]}
-            }
-            features.append(network_feature)
+            })
 
-        combined_coords = wilderness_coords.copy()
+        # Wilderness end segment
+        if wilderness_end and wilderness_end_stats:
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "segment_type": "wilderness",
+                    "segment_position": "end",
+                    "effort_minutes": float(wilderness_end_stats["effort_minutes"]),
+                    "distance_km": float(wilderness_end_stats["distance_km"]),
+                    "elevation_gain_m": wilderness_end_stats["elevation_gain_m"],
+                    "elevation_loss_m": wilderness_end_stats["elevation_loss_m"],
+                    "boundary_mode": boundary_mode,
+                    "on_trail_pct": wilderness_end_stats["on_trail_pct"],
+                    "barrier_crossings": wilderness_end_stats["barrier_crossings"],
+                    "wilderness_mode": "foot",
+                },
+                "geometry": {"type": "LineString", "coordinates": wilderness_end}
+            })
+
+        # Combined path
+        combined_coords = []
+        if wilderness_start:
+            combined_coords.extend(wilderness_start)
         if network_segment:
-            combined_coords.extend(network_segment["coordinates"][1:])
+            # Skip first coord if we already have wilderness_start (avoid duplicate)
+            start_idx = 1 if wilderness_start else 0
+            combined_coords.extend(network_segment["coordinates"][start_idx:])
+        if wilderness_end:
+            # Skip first coord (avoid duplicate with network end)
+            start_idx = 1 if (wilderness_start or network_segment) else 0
+            combined_coords.extend(wilderness_end[start_idx:])
 
-        combined_feature = {
-            "type": "Feature",
-            "properties": {
-                "segment_type": "combined",
-                "wilderness_mode": "foot",
-                "network_mode": mode,
-                "boundary_mode": boundary_mode
-            },
-            "geometry": {"type": "LineString", "coordinates": combined_coords}
-        }
-        features.append(combined_feature)
+        if combined_coords:
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "segment_type": "combined",
+                    "wilderness_mode": "foot",
+                    "network_mode": mode,
+                    "boundary_mode": boundary_mode,
+                    "scenario": scenario,
+                },
+                "geometry": {"type": "LineString", "coordinates": combined_coords}
+            })
 
         geojson = {"type": "FeatureCollection", "features": features}
 
-        total_distance_km = wilderness_distance_m / 1000
-        total_effort_minutes = best_cost / 60
+        # Calculate totals
+        total_distance_km = 0.0
+        total_effort_minutes = 0.0
+        wilderness_distance_km = 0.0
+        wilderness_effort_minutes = 0.0
+        network_distance_km = 0.0
+        network_duration_minutes = 0.0
+        barrier_crossings = 0
+        on_trail_pct = 0.0
+
+        if wilderness_start_stats:
+            wilderness_distance_km += wilderness_start_stats["distance_km"]
+            wilderness_effort_minutes += wilderness_start_stats["effort_minutes"]
+            barrier_crossings += wilderness_start_stats["barrier_crossings"]
+            on_trail_pct = wilderness_start_stats["on_trail_pct"]
+
+        if wilderness_end_stats:
+            wilderness_distance_km += wilderness_end_stats["distance_km"]
+            wilderness_effort_minutes += wilderness_end_stats["effort_minutes"]
+            barrier_crossings += wilderness_end_stats["barrier_crossings"]
+            # Average on-trail percentage if we have both
+            if wilderness_start_stats:
+                on_trail_pct = (on_trail_pct + wilderness_end_stats["on_trail_pct"]) / 2
+            else:
+                on_trail_pct = wilderness_end_stats["on_trail_pct"]
 
         if network_segment:
-            total_distance_km += network_segment["distance_km"]
-            total_effort_minutes += network_segment["duration_minutes"]
+            network_distance_km = network_segment["distance_km"]
+            network_duration_minutes = network_segment["duration_minutes"]
+
+        total_distance_km = wilderness_distance_km + network_distance_km
+        total_effort_minutes = wilderness_effort_minutes + network_duration_minutes
 
         summary = {
             "total_distance_km": float(total_distance_km),
             "total_effort_minutes": float(total_effort_minutes),
-            "wilderness_distance_km": float(wilderness_distance_m / 1000),
-            "wilderness_effort_minutes": float(best_cost / 60),
-            "network_distance_km": float(network_segment["distance_km"]) if network_segment else 0,
-            "network_duration_minutes": float(network_segment["duration_minutes"]) if network_segment else 0,
-            "on_trail_pct": on_trail_pct,
+            "wilderness_distance_km": float(wilderness_distance_km),
+            "wilderness_effort_minutes": float(wilderness_effort_minutes),
+            "network_distance_km": float(network_distance_km),
+            "network_duration_minutes": float(network_duration_minutes),
+            "on_trail_pct": float(on_trail_pct),
             "barrier_crossings": barrier_crossings,
             "boundary_mode": boundary_mode,
-            "wilderness_mode": "foot",  # Always foot
-            "network_mode": mode,        # User's selection
-            "entry_point": {
-                "lat": entry_lat, "lon": entry_lon,
-                "highway_class": entry_class, "name": entry_name,
-            },
+            "wilderness_mode": "foot",
+            "network_mode": mode,
+            "scenario": scenario,
             "computation_time_s": time.time() - t0,
         }
+
+        if entry_start:
+            summary["entry_point_start"] = {
+                "lat": entry_start["lat"],
+                "lon": entry_start["lon"],
+                "highway_class": entry_start["highway_class"],
+                "name": entry_start.get("name", ""),
+            }
+
+        if entry_end:
+            summary["entry_point_end"] = {
+                "lat": entry_end["lat"],
+                "lon": entry_end["lon"],
+                "highway_class": entry_end["highway_class"],
+                "name": entry_end.get("name", ""),
+            }
 
         result = {"status": "ok", "route": geojson, "summary": summary}
 
@@ -753,28 +1278,46 @@ if __name__ == "__main__":
         print(f"\nDone. Total entry points: {stats['total']}")
 
     elif len(sys.argv) > 1 and sys.argv[1] == "test":
-        print("Testing router (all modes)...")
-        print("NOTE: Wilderness always uses foot mode. User mode affects entry points + network.")
+        print("Testing router (all scenarios)...")
+        print("=" * 60)
 
         router = OffrouteRouter()
 
-        for mode in ["foot", "mtb", "atv", "vehicle"]:
-            print(f"\n{'='*60}")
-            print(f"Mode: {mode}")
-            print("="*60)
+        # Test points
+        wilderness_start = (44.0543, -115.4237)  # Off-network
+        wilderness_end = (45.2, -115.5)          # Deep wilderness (Frank Church)
+        road_start = (43.6150, -116.2023)        # Boise downtown (on-network)
+        road_end = (43.5867, -116.5625)          # Nampa (on-network)
+
+        tests = [
+            ("A: wilderness→road", wilderness_start, (44.0814, -115.5021)),
+            ("B: wilderness→wilderness", wilderness_start, wilderness_end),
+            ("C: road→wilderness", road_start, wilderness_start),
+            ("D: road→road", road_start, road_end),
+        ]
+
+        for label, (slat, slon), (elat, elon) in tests:
+            print(f"\n{label}")
+            print("-" * 40)
 
             result = router.route(
-                start_lat=42.35, start_lon=-114.30,
-                end_lat=42.5629, end_lon=-114.4609,
-                mode=mode, boundary_mode="pragmatic"
+                start_lat=slat, start_lon=slon,
+                end_lat=elat, end_lon=elon,
+                mode="foot", boundary_mode="pragmatic"
             )
 
             if result["status"] == "ok":
                 s = result["summary"]
-                print(f"  Wilderness: {s['wilderness_distance_km']:.2f} km, {s['wilderness_effort_minutes']:.1f} min (foot)")
-                print(f"  Network: {s['network_distance_km']:.2f} km, {s['network_duration_minutes']:.1f} min ({mode})")
-                print(f"  On-trail: {s['on_trail_pct']:.1f}%")
-                print(f"  Entry: {s['entry_point']['highway_class']}")
+                print(f"  Scenario: {s.get('scenario', '?')}")
+                print(f"  Total: {s['total_distance_km']:.2f} km, {s['total_effort_minutes']:.1f} min")
+                print(f"  Wilderness: {s['wilderness_distance_km']:.2f} km")
+                print(f"  Network: {s['network_distance_km']:.2f} km")
+                if s.get('entry_point_start'):
+                    ep = s['entry_point_start']
+                    print(f"  Entry (start): {ep['highway_class']} at {ep['lat']:.4f}, {ep['lon']:.4f}")
+                if s.get('entry_point_end'):
+                    ep = s['entry_point_end']
+                    print(f"  Entry (end): {ep['highway_class']} at {ep['lat']:.4f}, {ep['lon']:.4f}")
             else:
                 print(f"  ERROR: {result['message']}")
 
@@ -783,4 +1326,4 @@ if __name__ == "__main__":
     else:
         print("Usage:")
         print("  python router.py build   # Build entry point index")
-        print("  python router.py test    # Test all modes")
+        print("  python router.py test    # Test all scenarios")
