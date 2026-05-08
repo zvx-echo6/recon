@@ -804,7 +804,7 @@ class OffrouteRouter:
         """
         # Build bbox - only include origin and entry points, NOT distant destination
         # The destination is handled by Valhalla, wilderness only needs to reach entry points
-        MAX_BBOX_DEGREES = 0.5
+        MAX_BBOX_DEGREES = 2.0
         all_lats = [origin_lat] + [p["lat"] for p in entry_points]
         all_lons = [origin_lon] + [p["lon"] for p in entry_points]
 
