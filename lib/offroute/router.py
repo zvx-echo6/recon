@@ -50,7 +50,7 @@ EXPANDED_SEARCH_RADIUS_KM = 100
 MEMORY_LIMIT_GB = 12
 
 # Off-network detection threshold (meters)
-OFF_NETWORK_THRESHOLD_M = 500
+OFF_NETWORK_THRESHOLD_M = 10
 
 # Mode to Valhalla costing mapping
 MODE_TO_COSTING = {
