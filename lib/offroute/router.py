@@ -17,15 +17,17 @@ The user's selected mode affects:
 import gc
 import json
 import math
-import sqlite3
 import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Literal
+from typing import Dict, List, Optional, Tuple, Literal, Set
 
 import numpy as np
 import requests
+import psycopg2
+import psycopg2.extras
+from shapely.geometry import LineString
 from skimage.graph import MCP_Geometric
 
 from .dem import DEMReader
@@ -34,10 +36,19 @@ from .friction import FrictionReader, friction_to_multiplier
 from .barriers import BarrierReader, WildernessReader, DEFAULT_WILDERNESS_PATH
 from .trails import TrailReader
 from .mvum import get_mvum_access_grid
+from ..deployment_config import get_deployment_config
 
-# Paths
+# Load configuration
+_deploy_config = get_deployment_config()
+_offroute_config = _deploy_config.get("offroute", {})
+
+# Paths (configurable via home.yaml)
+OSM_PBF_PATH = Path(_offroute_config.get("osm_pbf_path", "/mnt/nav/sources/idaho-latest.osm.pbf"))
+DENSIFY_INTERVAL_M = _offroute_config.get("densify_interval_m", 100)
+POSTGIS_DSN = _offroute_config.get("postgis_dsn", "dbname=padus user=postgres")
+
+# Legacy SQLite path (still used by MVUM)
 NAVI_DB_PATH = Path("/mnt/nav/navi.db")
-OSM_PBF_PATH = Path("/mnt/nav/sources/idaho-latest.osm.pbf")
 
 # Valhalla endpoint
 VALHALLA_URL = "http://localhost:8002"
@@ -50,7 +61,7 @@ EXPANDED_SEARCH_RADIUS_KM = 100
 MEMORY_LIMIT_GB = 12
 
 # Off-network detection threshold (meters)
-OFF_NETWORK_THRESHOLD_M = 10
+OFF_NETWORK_THRESHOLD_M = 50
 
 # Mode to Valhalla costing mapping
 MODE_TO_COSTING = {
@@ -99,110 +110,168 @@ def check_memory_usage() -> float:
 
 class EntryPointIndex:
     """
-    Trail entry point index for wilderness-to-network handoff.
-
-    Entry points are endpoints and intersections of OSM highways
-    that connect wilderness areas to the routable network.
+    PostGIS-backed spatial index of road/trail entry points.
+    Uses ST_DWithin for fast radius queries with meter-accurate distances.
+    Densifies highway LineStrings at 100m intervals for better coverage.
     """
 
-    def __init__(self, db_path: Path = NAVI_DB_PATH):
-        self.db_path = db_path
-        self._conn = None
+    def __init__(self, dsn: str = None):
+        self.dsn = dsn or POSTGIS_DSN
+        self._conn: Optional[psycopg2.extensions.connection] = None
 
-    def _get_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.row_factory = sqlite3.Row
+    def _get_conn(self) -> psycopg2.extensions.connection:
+        if self._conn is None or self._conn.closed:
+            self._conn = psycopg2.connect(self.dsn)
         return self._conn
 
     def table_exists(self) -> bool:
-        """Check if trail_entry_points table exists."""
-        if not self.db_path.exists():
-            return False
+        """Check if entry_points table exists."""
         conn = self._get_conn()
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='trail_entry_points'"
-        )
-        return cur.fetchone() is not None
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = 'entry_points'
+                )
+            """)
+            return cur.fetchone()[0]
 
     def get_entry_point_count(self) -> int:
-        """Get count of entry points."""
+        """Return the number of entry points in the index."""
         if not self.table_exists():
             return 0
         conn = self._get_conn()
-        cur = conn.execute("SELECT COUNT(*) FROM trail_entry_points")
-        return cur.fetchone()[0]
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM entry_points")
+            return cur.fetchone()[0]
 
-    def query_bbox(self, south: float, north: float, west: float, east: float) -> List[Dict]:
-        """Query entry points within a bounding box."""
+    def query_bbox(
+        self,
+        south: float,
+        north: float,
+        west: float,
+        east: float,
+        valid_highways: Optional[Set[str]] = None
+    ) -> List[Dict]:
+        """Find entry points within a bounding box."""
         if not self.table_exists():
             return []
 
         conn = self._get_conn()
-        cur = conn.execute("""
-            SELECT id, lat, lon, highway_class, name
-            FROM trail_entry_points
-            WHERE lat >= ? AND lat <= ? AND lon >= ? AND lon <= ?
-        """, (south, north, west, east))
 
-        return [dict(row) for row in cur.fetchall()]
+        highway_filter = ""
+        params = [west, south, east, north]
+        if valid_highways:
+            placeholders = ','.join(['%s'] * len(valid_highways))
+            highway_filter = f"AND highway_class IN ({placeholders})"
+            params.extend(list(valid_highways))
 
-    def query_radius(self, lat: float, lon: float, radius_km: float,
-                     valid_highways: Optional[set] = None) -> List[Dict]:
+        query = f"""
+            SELECT
+                id,
+                ST_Y(geom) as lat,
+                ST_X(geom) as lon,
+                highway_class,
+                name,
+                land_status
+            FROM entry_points
+            WHERE geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)
+            {highway_filter}
         """
-        Query entry points within radius of a point.
 
-        Args:
-            lat, lon: Center point
-            radius_km: Search radius in kilometers
-            valid_highways: Optional set of valid highway classes to filter by
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
+
+    def query_radius(
+        self,
+        lat: float,
+        lon: float,
+        radius_km: float,
+        valid_highways: Optional[Set[str]] = None,
+        limit: int = 50
+    ) -> List[Dict]:
         """
-        lat_delta = radius_km / 111.0
-        lon_delta = radius_km / (111.0 * math.cos(math.radians(lat)))
+        Find entry points within radius_km of (lat, lon).
+        Uses PostGIS ST_DWithin with geography cast for meter-accurate distance.
+        """
+        if not self.table_exists():
+            return []
 
-        points = self.query_bbox(
-            lat - lat_delta, lat + lat_delta,
-            lon - lon_delta, lon + lon_delta
-        )
+        conn = self._get_conn()
+        radius_m = radius_km * 1000
 
-        result = []
-        for p in points:
-            # Filter by highway class if specified
-            if valid_highways and p['highway_class'] not in valid_highways:
-                continue
+        # Build query with optional highway filter
+        highway_filter = ""
+        params = [lon, lat, lon, lat, radius_m]
+        if valid_highways:
+            placeholders = ','.join(['%s'] * len(valid_highways))
+            highway_filter = f"AND highway_class IN ({placeholders})"
+            params.extend(list(valid_highways))
+        params.append(limit)
 
-            dist = haversine_distance(lat, lon, p['lat'], p['lon'])
-            if dist <= radius_km * 1000:
-                p['distance_m'] = dist
-                result.append(p)
+        query = f"""
+            SELECT
+                id,
+                ST_Y(geom) as lat,
+                ST_X(geom) as lon,
+                highway_class,
+                name,
+                land_status,
+                ST_Distance(
+                    geom::geography,
+                    ST_SetSRID(ST_Point(%s, %s), 4326)::geography
+                ) as distance_m
+            FROM entry_points
+            WHERE ST_DWithin(
+                geom::geography,
+                ST_SetSRID(ST_Point(%s, %s), 4326)::geography,
+                %s
+            )
+            {highway_filter}
+            ORDER BY distance_m
+            LIMIT %s
+        """
 
-        return sorted(result, key=lambda x: x['distance_m'])
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
 
-    def build_index(self, osm_pbf_path: Path = OSM_PBF_PATH) -> Dict:
-        """Build the entry point index from OSM PBF."""
+    def build_index(self, osm_pbf_path: Path = None) -> Dict:
+        """
+        Build the entry point index from OSM PBF.
+        Densifies LineStrings to sample points every 100m.
+        Tags points with land_status from PAD-US.
+        """
+        if osm_pbf_path is None:
+            osm_pbf_path = OSM_PBF_PATH
+
         if not osm_pbf_path.exists():
             raise FileNotFoundError(f"OSM PBF not found: {osm_pbf_path}")
 
-        print(f"Building trail entry point index from {osm_pbf_path}...")
+        print(f"Building entry point index from {osm_pbf_path}...")
+        start_time = time.time()
 
         highway_types = [
             "primary", "secondary", "tertiary", "unclassified",
             "residential", "service", "track", "path", "footway", "bridleway"
         ]
 
-        stats = {"total": 0, "by_class": {}}
+        stats = {"total": 0, "by_class": {}, "lines_processed": 0}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             geojson_path = Path(tmpdir) / "highways.geojson"
 
-            print(f"  Extracting highways with osmium...")
+            # Extract highways with osmium
+            print("  Extracting highways with osmium...")
             cmd = ["osmium", "tags-filter", str(osm_pbf_path)]
             for ht in highway_types:
                 cmd.append(f"w/highway={ht}")
             cmd.extend(["-o", str(Path(tmpdir) / "filtered.osm.pbf"), "--overwrite"])
             subprocess.run(cmd, check=True, capture_output=True)
 
-            print(f"  Converting to GeoJSON with ogr2ogr...")
+            # Convert to GeoJSON
+            print("  Converting to GeoJSON with ogr2ogr...")
             cmd = [
                 "ogr2ogr", "-f", "GeoJSON",
                 str(geojson_path),
@@ -211,12 +280,23 @@ class EntryPointIndex:
             ]
             subprocess.run(cmd, check=True, capture_output=True)
 
-            print(f"  Extracting entry points...")
+            # Load GeoJSON
+            print("  Loading GeoJSON...")
             with open(geojson_path) as f:
                 data = json.load(f)
 
-            points = {}
-            for feature in data.get("features", []):
+            # Process features and densify
+            print(f"  Densifying LineStrings at {DENSIFY_INTERVAL_M}m intervals...")
+            points_to_insert = []
+            seen_keys = set()
+
+            features = data.get("features", [])
+            total_features = len(features)
+
+            for idx, feature in enumerate(features):
+                if idx > 0 and idx % 100000 == 0:
+                    print(f"    Processed {idx}/{total_features} features...")
+
                 props = feature.get("properties", {})
                 geom = feature.get("geometry", {})
 
@@ -229,56 +309,117 @@ class EntryPointIndex:
 
                 highway_class = props.get("highway", "unknown")
                 name = props.get("name", "")
+                stats["lines_processed"] += 1
 
-                for coord in [coords[0], coords[-1]]:
-                    lon, lat = coord[0], coord[1]
+                # Densify this LineString
+                densified = self._densify_line(coords, DENSIFY_INTERVAL_M)
+
+                for lon, lat in densified:
+                    # Deduplicate by rounding to 5 decimal places (~1m precision)
                     key = (round(lat, 5), round(lon, 5))
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
 
-                    if key not in points:
-                        points[key] = {
-                            "lat": lat, "lon": lon,
-                            "highway_class": highway_class, "name": name
-                        }
-                    else:
-                        existing = points[key]
-                        if self._highway_priority(highway_class) < self._highway_priority(existing["highway_class"]):
-                            points[key]["highway_class"] = highway_class
-                        if name and not existing["name"]:
-                            points[key]["name"] = name
+                    points_to_insert.append((lon, lat, highway_class, name))
 
-        print(f"  Writing {len(points)} entry points to {self.db_path}...")
-
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Insert into PostGIS
+        print(f"  Inserting {len(points_to_insert)} entry points into PostGIS...")
         conn = self._get_conn()
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS trail_entry_points (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                lat REAL NOT NULL, lon REAL NOT NULL,
-                highway_class TEXT NOT NULL, name TEXT
-            )
-        """)
-        conn.execute("DELETE FROM trail_entry_points")
+        with conn.cursor() as cur:
+            # Truncate existing data
+            cur.execute("TRUNCATE entry_points RESTART IDENTITY")
 
-        for point in points.values():
-            conn.execute(
-                "INSERT INTO trail_entry_points (lat, lon, highway_class, name) VALUES (?, ?, ?, ?)",
-                (point["lat"], point["lon"], point["highway_class"], point["name"])
-            )
-            stats["total"] += 1
-            hc = point["highway_class"]
-            stats["by_class"][hc] = stats["by_class"].get(hc, 0) + 1
+            # Batch insert with execute_values for speed
+            batch_size = 50000
+            for i in range(0, len(points_to_insert), batch_size):
+                batch = points_to_insert[i:i+batch_size]
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO entry_points (geom, highway_class, name)
+                    VALUES %s
+                    """,
+                    batch,
+                    template="(ST_SetSRID(ST_Point(%s, %s), 4326), %s, %s)",
+                    page_size=10000
+                )
+                if i > 0 and i % 500000 == 0:
+                    print(f"    Inserted {i}/{len(points_to_insert)} points...")
 
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_entry_lat ON trail_entry_points(lat)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_entry_lon ON trail_entry_points(lon)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_entry_latlon ON trail_entry_points(lat, lon)")
         conn.commit()
 
-        print(f"  Done. Total: {stats['total']} entry points")
+        # Tag land_status from PAD-US
+        print("  Tagging land_status from PAD-US subdivided polygons...")
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE entry_points e
+                SET land_status = 'public'
+                FROM padus_sub p
+                WHERE ST_Intersects(e.geom, p.geom)
+            """)
+            public_count = cur.rowcount
+            print(f"    Tagged {public_count} points as public land")
+
+        conn.commit()
+
+        # Gather stats
+        elapsed = time.time() - start_time
+        stats["total"] = len(points_to_insert)
+        stats["build_time_sec"] = round(elapsed, 1)
+
+        for lon, lat, hc, name in points_to_insert:
+            stats["by_class"][hc] = stats["by_class"].get(hc, 0) + 1
+
+        print(f"  Done in {elapsed:.1f}s. Total: {stats['total']} entry points from {stats['lines_processed']} lines")
         for hc, count in sorted(stats["by_class"].items(), key=lambda x: -x[1]):
             print(f"    {hc}: {count}")
 
         return stats
+
+    def _densify_line(self, coords: List[List[float]], interval_m: float) -> List[tuple]:
+        """
+        Sample points along a LineString at regular intervals.
+        coords: [[lon, lat], ...] in GeoJSON order
+        Returns: [(lon, lat), ...] sampled points including first and last
+        """
+        if len(coords) < 2:
+            return [(coords[0][0], coords[0][1])] if coords else []
+
+        # Calculate line length in meters using haversine on segments
+        total_m = 0
+        for i in range(len(coords) - 1):
+            lon1, lat1 = coords[i]
+            lon2, lat2 = coords[i + 1]
+            total_m += haversine_distance(lat1, lon1, lat2, lon2)
+
+        if total_m == 0:
+            return [(coords[0][0], coords[0][1])]
+
+        # Create Shapely LineString
+        line = LineString(coords)
+
+        # Calculate number of points needed
+        n_points = max(2, int(total_m / interval_m) + 1)
+
+        # Sample using normalized interpolation
+        result = []
+        for i in range(n_points):
+            fraction = min(i / (n_points - 1), 1.0) if n_points > 1 else 0
+            point = line.interpolate(fraction, normalized=True)
+            result.append((point.x, point.y))  # (lon, lat)
+
+        # Always ensure first and last original coordinates are included
+        first_coord = (coords[0][0], coords[0][1])
+        last_coord = (coords[-1][0], coords[-1][1])
+
+        if result[0] != first_coord:
+            result[0] = first_coord
+        if result[-1] != last_coord:
+            result[-1] = last_coord
+
+        return result
 
     def _highway_priority(self, highway_class: str) -> int:
         """Lower number = better priority for entry points."""
@@ -290,7 +431,7 @@ class EntryPointIndex:
         return priority.get(highway_class, 99)
 
     def close(self):
-        if self._conn:
+        if self._conn and not self._conn.closed:
             self._conn.close()
             self._conn = None
 
