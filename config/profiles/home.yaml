@@ -6,13 +6,13 @@ profile: home
 region_name: "North America"
 
 tileset:
-  url: "/tiles/na.pmtiles"
+  url: "/tiles/planet/current.pmtiles"
   bounds: [-168, 14, -52, 72]
   max_zoom: 15
   attribution: "Protomaps © OSM"
 
 tileset_hillshade:
-  url: "/tiles/hillshade-na.pmtiles"
+  url: "/tiles/planet-dem.pmtiles"
   encoding: "terrarium"
   max_zoom: 12
 
@@ -33,14 +33,14 @@ services:
 
 features:
   has_nominatim_details: true
-  has_kiwix_wiki: false
+  has_kiwix_wiki: true
   has_hillshade: true
   has_3d_terrain: false
   has_traffic_overlay: true
   has_landclass: true
   has_public_lands_layer: true
   has_contours: true
-  has_contours_test: true
+  has_contours_test: false
   has_contours_test_10ft: false
   has_address_book_write: false
   has_overture_enrichment: true
@@ -48,7 +48,16 @@ features:
   has_contacts: true
   has_wiki_rewriting: true
   has_wiki_discovery: false
+  has_usfs_trails: true
+  has_blm_trails: true
 
 defaults:
   center: [42.5736, -114.6066]
   zoom: 10
+
+# Offroute wilderness routing
+offroute:
+  osm_pbf_path: "/mnt/nav/sources/idaho-latest.osm.pbf"
+  densify_interval_m: 100
+  postgis_dsn: "dbname=padus"
+
