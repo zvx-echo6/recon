@@ -728,6 +728,7 @@ class OffrouteRouter:
         # Extract results
         wilderness_coords = wilderness_result["coords"]
         wilderness_stats = wilderness_result["stats"]
+        wilderness_elevations = wilderness_result.get("elevations", [])
         best_entry = wilderness_result["entry_point"]
 
         entry_lat = best_entry["lat"]
@@ -740,9 +741,11 @@ class OffrouteRouter:
         return self._build_response(
             wilderness_start=wilderness_coords,
             wilderness_start_stats=wilderness_stats,
+            wilderness_start_elevations=wilderness_elevations,
             network_segment=network_result.get("segment"),
             wilderness_end=None,
             wilderness_end_stats=None,
+            wilderness_end_elevations=None,
             mode=mode,
             boundary_mode=boundary_mode,
             entry_start=best_entry,
@@ -805,6 +808,7 @@ class OffrouteRouter:
         # The path is from end→entry, reverse it for display (entry→end)
         wilderness_coords = list(reversed(wilderness_result["coords"]))
         wilderness_stats = wilderness_result["stats"]
+        wilderness_elevations = list(reversed(wilderness_result.get("elevations", [])))
         best_entry = wilderness_result["entry_point"]
 
         entry_lat = best_entry["lat"]
@@ -817,9 +821,11 @@ class OffrouteRouter:
         return self._build_response(
             wilderness_start=None,
             wilderness_start_stats=None,
+            wilderness_start_elevations=None,
             network_segment=network_result.get("segment"),
             wilderness_end=wilderness_coords,
             wilderness_end_stats=wilderness_stats,
+            wilderness_end_elevations=wilderness_elevations,
             mode=mode,
             boundary_mode=boundary_mode,
             entry_start=None,
@@ -885,6 +891,7 @@ class OffrouteRouter:
 
         wilderness_start_coords = wilderness_start_result["coords"]
         wilderness_start_stats = wilderness_start_result["stats"]
+        wilderness_start_elevations = wilderness_start_result.get("elevations", [])
         entry_A = wilderness_start_result["entry_point"]
 
         # Phase 2: Wilderness pathfinding from END (run after freeing phase 1 memory)
@@ -899,6 +906,7 @@ class OffrouteRouter:
         # Reverse the end wilderness path (it's end→entry, we want entry→end for display)
         wilderness_end_coords = list(reversed(wilderness_end_result["coords"]))
         wilderness_end_stats = wilderness_end_result["stats"]
+        wilderness_end_elevations = list(reversed(wilderness_end_result.get("elevations", [])))
         entry_B = wilderness_end_result["entry_point"]
 
         # Phase 3: Valhalla from entry_A to entry_B
@@ -912,9 +920,11 @@ class OffrouteRouter:
         return self._build_response(
             wilderness_start=wilderness_start_coords,
             wilderness_start_stats=wilderness_start_stats,
+            wilderness_start_elevations=wilderness_start_elevations,
             network_segment=network_result.get("segment"),
             wilderness_end=wilderness_end_coords,
             wilderness_end_stats=wilderness_end_stats,
+            wilderness_end_elevations=wilderness_end_elevations,
             mode=mode,
             boundary_mode=boundary_mode,
             entry_start=entry_A,
@@ -1109,6 +1119,7 @@ class OffrouteRouter:
         return {
             "status": "ok",
             "coords": coords,
+            "elevations": elevations,  # Raw elevation values for maneuver generation
             "stats": {
                 "distance_km": distance_m / 1000,
                 "effort_minutes": best_cost / 60,
@@ -1184,13 +1195,199 @@ class OffrouteRouter:
         except Exception as e:
             return {"segment": None, "error": f"Valhalla request failed: {e}"}
 
+    def _generate_wilderness_maneuvers(
+        self,
+        coords: List[List[float]],
+        elevations: List[float],
+        position: str = "start"
+    ) -> List[Dict]:
+        """
+        Generate turn-by-turn maneuvers for a wilderness segment.
+
+        Segment breaks occur when:
+        - Bearing changes more than 30° from segment start
+        - Grade category changes (flat→steep etc)
+        - Distance exceeds 0.5 miles without a break
+
+        Args:
+            coords: [[lon, lat], ...] coordinate list
+            elevations: Elevation values (meters) for each coord
+            position: "start" or "end" for labeling
+
+        Returns:
+            List of maneuver dicts with instruction, distance, elevation, grade, bearing
+        """
+        if not coords or len(coords) < 2:
+            return []
+
+        # Constants
+        COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                   "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+        MAX_SEGMENT_M = 804.672  # 0.5 miles in meters
+        BEARING_THRESHOLD = 30  # degrees
+        M_TO_FT = 3.28084
+        M_TO_MI = 0.000621371
+
+        def get_bearing(lat1, lon1, lat2, lon2):
+            """Calculate bearing between two points (degrees 0-360)."""
+            dlon = math.radians(lon2 - lon1)
+            lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
+            x = math.sin(dlon) * math.cos(lat2_r)
+            y = math.cos(lat1_r) * math.sin(lat2_r) - math.sin(lat1_r) * math.cos(lat2_r) * math.cos(dlon)
+            return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+        def bearing_to_cardinal(bearing):
+            """Convert bearing to 16-point compass direction."""
+            return COMPASS[round(bearing / 22.5) % 16]
+
+        def get_grade_category(grade_deg):
+            """Categorize grade angle: flat (0-2°), gentle (2-5°), moderate (5-10°), steep (10-15°), very steep (15°+)."""
+            grade_abs = abs(grade_deg)
+            if grade_abs < 2:
+                return "flat"
+            elif grade_abs < 5:
+                return "gentle"
+            elif grade_abs < 10:
+                return "moderate"
+            elif grade_abs < 15:
+                return "steep"
+            else:
+                return "very steep"
+
+        def format_distance(meters):
+            """Format distance: feet with commas if under 1 mile, miles with one decimal if over."""
+            miles = meters * M_TO_MI
+            if miles < 1.0:
+                feet = round(meters * M_TO_FT)
+                return f"{feet:,} ft"
+            else:
+                return f"{miles:.1f} mi"
+
+        def build_instruction(cardinal, gain_ft, loss_ft, grade_cat, distance_m):
+            """Build instruction string per spec."""
+            dist_str = format_distance(distance_m)
+            if grade_cat == "flat":
+                return f"Head {cardinal} on level ground — {dist_str}"
+            elif gain_ft > loss_ft:
+                return f"Head {cardinal}, gaining {gain_ft:,} ft ({grade_cat} uphill) — {dist_str}"
+            else:
+                return f"Head {cardinal}, descending {loss_ft:,} ft ({grade_cat} downhill) — {dist_str}"
+
+        maneuvers = []
+        i = 0
+
+        while i < len(coords) - 1:
+            seg_start_idx = i
+            seg_start_lon, seg_start_lat = coords[i]
+            seg_start_elev = elevations[i] if i < len(elevations) else 0
+
+            # Initial bearing for this segment
+            next_lon, next_lat = coords[i + 1]
+            seg_bearing = get_bearing(seg_start_lat, seg_start_lon, next_lat, next_lon)
+
+            # Accumulate elevation changes within segment
+            seg_distance_m = 0
+            seg_elev_gain = 0
+            seg_elev_loss = 0
+            prev_elev = seg_start_elev
+
+            # Calculate initial grade category
+            step_dist = haversine_distance(seg_start_lat, seg_start_lon, next_lat, next_lon)
+            step_elev_change = (elevations[i + 1] if i + 1 < len(elevations) else seg_start_elev) - seg_start_elev
+            initial_grade = math.degrees(math.atan(step_elev_change / step_dist)) if step_dist > 0 else 0
+            seg_grade_cat = get_grade_category(initial_grade)
+
+            j = i
+            while j < len(coords) - 1:
+                lon1, lat1 = coords[j]
+                lon2, lat2 = coords[j + 1]
+                elev1 = elevations[j] if j < len(elevations) else prev_elev
+                elev2 = elevations[j + 1] if j + 1 < len(elevations) else elev1
+
+                step_dist = haversine_distance(lat1, lon1, lat2, lon2)
+                step_bearing = get_bearing(lat1, lon1, lat2, lon2)
+                step_elev_change = elev2 - elev1
+                step_grade = math.degrees(math.atan(step_elev_change / step_dist)) if step_dist > 0 else 0
+                step_grade_cat = get_grade_category(step_grade)
+
+                # Check break conditions
+                bearing_diff = abs(step_bearing - seg_bearing)
+                if bearing_diff > 180:
+                    bearing_diff = 360 - bearing_diff
+
+                # Break if: bearing changed >30°, grade category changed, or distance >0.5mi
+                if seg_distance_m > 0:  # Don't break on first step
+                    if bearing_diff > BEARING_THRESHOLD:
+                        break
+                    if step_grade_cat != seg_grade_cat:
+                        break
+                    if seg_distance_m >= MAX_SEGMENT_M:
+                        break
+
+                # Accumulate
+                seg_distance_m += step_dist
+                if step_elev_change > 0:
+                    seg_elev_gain += step_elev_change
+                else:
+                    seg_elev_loss += abs(step_elev_change)
+                prev_elev = elev2
+                j += 1
+
+            # Compute segment stats
+            seg_end_idx = j
+            gain_ft = round(seg_elev_gain * M_TO_FT)
+            loss_ft = round(seg_elev_loss * M_TO_FT)
+
+            # Net elevation change for grade calculation
+            net_elev_change = seg_elev_gain - seg_elev_loss
+            grade_deg = math.degrees(math.atan(net_elev_change / seg_distance_m)) if seg_distance_m > 0 else 0
+            grade_cat = get_grade_category(grade_deg)
+
+            cardinal = bearing_to_cardinal(seg_bearing)
+            instruction = build_instruction(cardinal, gain_ft, loss_ft, grade_cat, seg_distance_m)
+
+            maneuvers.append({
+                "instruction": instruction,
+                "type": "wilderness",
+                "distance_m": round(seg_distance_m, 1),
+                "elevation_gain_ft": gain_ft,
+                "elevation_loss_ft": loss_ft,
+                "grade_degrees": round(grade_deg, 1),
+                "grade_category": grade_cat,
+                "bearing": round(seg_bearing, 1),
+                "cardinal": cardinal,
+            })
+
+            i = seg_end_idx
+
+        # Add arrival maneuver
+        arrival_text = "Arrive at trail/road" if position == "start" else "Arrive at destination"
+        last_bearing = maneuvers[-1]["bearing"] if maneuvers else 0
+        last_cardinal = maneuvers[-1]["cardinal"] if maneuvers else "N"
+
+        maneuvers.append({
+            "instruction": arrival_text,
+            "type": "arrival",
+            "distance_m": 0,
+            "elevation_gain_ft": 0,
+            "elevation_loss_ft": 0,
+            "grade_degrees": 0,
+            "grade_category": "flat",
+            "bearing": last_bearing,
+            "cardinal": last_cardinal,
+        })
+
+        return maneuvers
+
     def _build_response(
         self,
         wilderness_start: Optional[List],
         wilderness_start_stats: Optional[Dict],
+        wilderness_start_elevations: Optional[List],
         network_segment: Optional[Dict],
         wilderness_end: Optional[List],
         wilderness_end_stats: Optional[Dict],
+        wilderness_end_elevations: Optional[List],
         mode: str,
         boundary_mode: str,
         entry_start: Optional[Dict],
@@ -1204,6 +1401,11 @@ class OffrouteRouter:
 
         # Wilderness start segment
         if wilderness_start and wilderness_start_stats:
+            wild_start_maneuvers = []
+            if wilderness_start_elevations:
+                wild_start_maneuvers = self._generate_wilderness_maneuvers(
+                    wilderness_start, wilderness_start_elevations, position="start"
+                )
             features.append({
                 "type": "Feature",
                 "properties": {
@@ -1217,6 +1419,7 @@ class OffrouteRouter:
                     "on_trail_pct": wilderness_start_stats["on_trail_pct"],
                     "barrier_crossings": wilderness_start_stats["barrier_crossings"],
                     "wilderness_mode": "foot",
+                    "maneuvers": wild_start_maneuvers,
                 },
                 "geometry": {"type": "LineString", "coordinates": wilderness_start}
             })
@@ -1237,6 +1440,11 @@ class OffrouteRouter:
 
         # Wilderness end segment
         if wilderness_end and wilderness_end_stats:
+            wild_end_maneuvers = []
+            if wilderness_end_elevations:
+                wild_end_maneuvers = self._generate_wilderness_maneuvers(
+                    wilderness_end, wilderness_end_elevations, position="end"
+                )
             features.append({
                 "type": "Feature",
                 "properties": {
@@ -1250,6 +1458,7 @@ class OffrouteRouter:
                     "on_trail_pct": wilderness_end_stats["on_trail_pct"],
                     "barrier_crossings": wilderness_end_stats["barrier_crossings"],
                     "wilderness_mode": "foot",
+                    "maneuvers": wild_end_maneuvers,
                 },
                 "geometry": {"type": "LineString", "coordinates": wilderness_end}
             })
