@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the /api/reverse/<lat>/<lon> enrichment bundle (lib.netsyms_api).
 
-Photon/Valhalla/landclass are mocked so the suite runs without live services;
+Photon/DEM/landclass are mocked so the suite runs without live services;
 one timezone test exercises the real SpatiaLite DB when it is present. Plain
 asserts + a __main__ runner, matching the rest of lib/*_test.py.
 """
@@ -15,8 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask
 from lib import netsyms_api
 
-EXPECTED_KEYS = {'name', 'city', 'county', 'state', 'country',
-                 'postal_code', 'timezone', 'landclass', 'elevation_m'}
+EXPECTED_KEYS = set(netsyms_api._BUNDLE_KEYS)
 
 
 def _client():
@@ -124,6 +123,40 @@ def test_real_timezone_db():
     print("  PASS: real timezones.sqlite point-in-polygon")
 
 
+def test_elevation_from_dem_reader_mock():
+    # elevation_m comes from DEMReader.sample_point (not Valhalla); other
+    # components stubbed to null so the bundle is hermetic.
+    _clear_cache()
+    fake_dem = mock.Mock()
+    fake_dem.sample_point.return_value = 824
+    with mock.patch.object(netsyms_api, '_DEM', fake_dem), \
+         mock.patch.object(netsyms_api, '_reverse_photon', return_value={}), \
+         mock.patch.object(netsyms_api, '_reverse_timezone', return_value=None), \
+         mock.patch.object(netsyms_api, '_reverse_landclass', return_value=None):
+        resp = _client().get('/api/reverse/43.6150/-116.2023')
+    assert resp.status_code == 200, resp.status_code
+    data = resp.get_json()
+    assert set(data.keys()) == EXPECTED_KEYS
+    assert data['elevation_m'] == 824, data['elevation_m']
+    fake_dem.sample_point.assert_called_once()
+    print("  PASS: elevation_m sourced from DEMReader.sample_point")
+
+
+def test_elevation_dem_unavailable():
+    # DEMReader failed to init at startup (_DEM is None) -> elevation_m null, 200.
+    _clear_cache()
+    with mock.patch.object(netsyms_api, '_DEM', None), \
+         mock.patch.object(netsyms_api, '_reverse_photon', return_value={}), \
+         mock.patch.object(netsyms_api, '_reverse_timezone', return_value=None), \
+         mock.patch.object(netsyms_api, '_reverse_landclass', return_value=None):
+        resp = _client().get('/api/reverse/43.6150/-116.2023')
+    assert resp.status_code == 200, resp.status_code
+    data = resp.get_json()
+    assert set(data.keys()) == EXPECTED_KEYS
+    assert data['elevation_m'] is None
+    print("  PASS: DEMReader unavailable -> elevation_m null, still 200")
+
+
 if __name__ == '__main__':
     print("Running reverse-bundle tests...")
     test_happy_path()
@@ -133,4 +166,6 @@ if __name__ == '__main__':
     test_invalid_input_400()
     test_cache_hit_serves_without_recompute()
     test_real_timezone_db()
+    test_elevation_from_dem_reader_mock()
+    test_elevation_dem_unavailable()
     print("All tests passed.")

@@ -158,7 +158,28 @@ class DEMReader:
         }
         
         return elevation, metadata
-    
+
+    def sample_point(self, lat: float, lon: float) -> Optional[float]:
+        """Return elevation in meters at a single point, or None if untiled.
+
+        Reads one z12 Terrarium tile (LRU-cached) and indexes the matching
+        pixel. Sub-ms warm, ~15 ms cold per tile via NFS. Returns None when the
+        tile is absent (e.g. true ocean nodata) or lat is outside the
+        Web-Mercator pole cap (~+/-85.05 deg).
+        """
+        if not -85.05112878 <= lat <= 85.05112878:
+            return None
+        n = 2 ** ZOOM_LEVEL
+        fx = (lon + 180.0) / 360.0 * n
+        fy = (1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * n
+        tx, ty = int(fx), int(fy)
+        tile = self._decode_tile(ZOOM_LEVEL, tx, ty)
+        if tile is None:
+            return None
+        row = min(TILE_SIZE - 1, int((fy - ty) * TILE_SIZE))
+        col = min(TILE_SIZE - 1, int((fx - tx) * TILE_SIZE))
+        return float(tile[row, col])
+
     def pixel_to_latlon(self, row: int, col: int, metadata: dict) -> Tuple[float, float]:
         """Convert pixel coordinates to lat/lon."""
         lat = metadata["origin_lat"] + row * metadata["pixel_size_lat"]
