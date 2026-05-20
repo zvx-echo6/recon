@@ -214,6 +214,9 @@ def lookup_landclass(lat, lon):
                   des_tp, gap_sts, pub_access, category, gis_acres, state_nm
            FROM pad_units
            WHERE ST_Intersects(geom, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
+             -- exclude antimeridian-wrapping polygons: 47 BOEM marine artifacts
+             -- span ~360 deg longitude and false-match non-US points at their lat band
+             AND (ST_XMax(geom) - ST_XMin(geom)) < 60
            ORDER BY gis_acres ASC
            LIMIT 10""",
         (lon, lat)
