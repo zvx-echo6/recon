@@ -17,6 +17,7 @@ from . import netsyms
 from . import address_book
 from . import nav_tools
 from .geocode import PHOTON_URL
+from .offroute.dem import DEMReader
 from .utils import setup_logging
 
 logger = setup_logging('recon.netsyms_api')
@@ -137,12 +138,11 @@ def api_reverse():
 #
 #  Sibling to the query-string /api/reverse above; that route is unchanged.
 #  Every component is sourced from localhost only (Photon, timezones.sqlite,
-#  in-process landclass/PostGIS, Valhalla). Each lookup is independent: a
-#  component failure logs a warning and yields null — never a 5xx.
+#  in-process landclass/PostGIS, planet-DEM PMTiles). Each lookup is
+#  independent: a component failure logs a warning and yields null — never 5xx.
 # ─────────────────────────────────────────────────────────────────────────
 
 _TZ_DB_PATH = "/mnt/nav/sources/timezones.sqlite"
-_VALHALLA_HEIGHT_URL = "http://localhost:8002/height"
 
 # Full bundle cache: key=(round(lat,4), round(lon,4)) -> dict. ~10k entries, 24h TTL.
 _REVERSE_BUNDLE_CACHE = TTLCache(maxsize=10_000, ttl=86_400)
@@ -150,6 +150,14 @@ _REVERSE_BUNDLE_LOCK = threading.Lock()
 
 _BUNDLE_KEYS = ('name', 'city', 'county', 'state', 'country',
                 'postal_code', 'timezone', 'landclass', 'elevation_m')
+
+# planet-DEM elevation source (single PMTiles, replaces Valhalla /height).
+# Instantiated once at import; the underlying mmap is lazy. None if unavailable.
+try:
+    _DEM = DEMReader()
+except Exception as e:  # pragma: no cover - depends on PMTiles availability
+    logger.warning("DEMReader unavailable, elevation will be null: %s", e)
+    _DEM = None
 
 
 def _spatialite_blob_to_wkb(blob):
@@ -224,16 +232,12 @@ def _reverse_landclass(lat, lon):
 
 
 def _reverse_elevation(lat, lon):
-    """Elevation in metres from local Valhalla /height. None on failure."""
-    import requests as http_requests
-    resp = http_requests.post(
-        _VALHALLA_HEIGHT_URL,
-        json={"shape": [{"lat": lat, "lon": lon}]},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    heights = resp.json().get("height", [])
-    return heights[0] if heights else None
+    """Elevation in metres from the planet-DEM PMTiles — the single elevation
+    source per OFFROUTE-ARCHITECTURE.md §9. None on failure, on untiled points
+    (e.g. true ocean), or if DEMReader could not be initialized at startup."""
+    if _DEM is None:
+        return None
+    return _DEM.sample_point(lat, lon)
 
 
 @geocode_bp.route('/api/reverse/<lat>/<lon>')
