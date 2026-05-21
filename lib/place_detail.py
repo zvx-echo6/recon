@@ -286,6 +286,88 @@ def _apply_google_data(result, google_data, gaps):
 _WIKI_TAGS = ('wikipedia', 'wikidata', 'wikivoyage', 'appropedia')
 
 
+
+# ── Wiki Index enrichment ───────────────────────────────────────────────
+
+_wiki_index_conn = None
+
+def _get_wiki_index_db():
+    global _wiki_index_conn
+    if _wiki_index_conn is not None:
+        return _wiki_index_conn
+
+    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "wiki_index.db")
+    if not os.path.exists(db_path):
+        logger.debug(f"wiki_index.db not found at {db_path}")
+        return None
+
+    _wiki_index_conn = sqlite3.connect(db_path, check_same_thread=False)
+    _wiki_index_conn.row_factory = sqlite3.Row
+    logger.info(f"Wiki index DB ready at {db_path}")
+    return _wiki_index_conn
+
+
+def _enrich_with_wiki_index(result):
+    try:
+        from .deployment_config import get_deployment_config
+        deploy_config = get_deployment_config()
+        features = deploy_config.get("features", {})
+        if not features.get("has_kiwix_wiki", False):
+            return result
+    except Exception:
+        return result
+
+    db = _get_wiki_index_db()
+    if not db:
+        return result
+
+    try:
+        cur = db.cursor()
+        row = None
+
+        extratags = result.get("extratags", {})
+        wikidata_id = result.get("wikidata_id") or extratags.get("wikidata")
+        if wikidata_id:
+            if isinstance(wikidata_id, str) and wikidata_id.startswith("http"):
+                wikidata_id = wikidata_id.split("/")[-1]
+            cur.execute(
+                "SELECT summary, wiki_population, wikipedia_title, wikivoyage_title FROM wiki_places WHERE wikidata_id = ?",
+                (wikidata_id,)
+            )
+            row = cur.fetchone()
+
+        if not row:
+            name = result.get("name")
+            address = result.get("address") or {}
+            country_code = address.get("country_code") or result.get("country_code")
+            if name and country_code:
+                cur.execute(
+                    "SELECT summary, wiki_population, wikipedia_title, wikivoyage_title FROM wiki_places WHERE place_name = ? AND country_code = ? LIMIT 1",
+                    (name, country_code.lower())
+                )
+                row = cur.fetchone()
+
+        if row:
+            if row["summary"]:
+                result["wiki_summary"] = row["summary"]
+            if row["wiki_population"]:
+                try:
+                    result["wiki_population"] = int(row["wiki_population"])
+                except (ValueError, TypeError):
+                    result["wiki_population"] = row["wiki_population"]
+            if row["wikipedia_title"]:
+                title = row["wikipedia_title"].replace(" ", "_")
+                result["wiki_url"] = f"https://en.wikipedia.org/wiki/{title}"
+            if row["wikivoyage_title"]:
+                title = row["wikivoyage_title"].replace(" ", "_")
+                result["wikivoyage_url"] = f"https://en.wikivoyage.org/wiki/{title}"
+            logger.debug(f"Wiki index enrichment hit for {result.get(name)}")
+
+    except Exception as e:
+        logger.debug(f"Wiki index enrichment error: {e}")
+
+    return result
+
 def _enrich_wiki_links(result):
     """
     Rewrite wiki-related extratags to local Kiwix URLs where available.
@@ -625,6 +707,7 @@ def get_place_detail(osm_type, osm_id):
         nominatim_result = _enrich_with_overture(nominatim_result, osm_type, osm_id)
         nominatim_result = _enrich_with_google(nominatim_result, osm_type, osm_id)
         nominatim_result = _enrich_wiki_links(nominatim_result)
+        nominatim_result = _enrich_with_wiki_index(nominatim_result)
         cache_put(osm_type, osm_id, nominatim_result, 'nominatim_local')
         return nominatim_result, 200
 
@@ -658,6 +741,7 @@ def get_place_detail(osm_type, osm_id):
         overpass_result = _enrich_with_overture(overpass_result, osm_type, osm_id)
         overpass_result = _enrich_with_google(overpass_result, osm_type, osm_id)
         overpass_result = _enrich_wiki_links(overpass_result)
+        overpass_result = _enrich_with_wiki_index(overpass_result)
         cache_put(osm_type, osm_id, overpass_result, 'overpass')
         return overpass_result, 200
 
@@ -809,6 +893,7 @@ def get_place_by_wikidata(wikidata_id):
 
         result["boundary"] = boundary
 
+        result = _enrich_with_wiki_index(result)
         logger.debug(f"Wikidata hit: {wikidata_id} -> {name}")
         return result, 200
 
