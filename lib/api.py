@@ -1215,7 +1215,8 @@ def api_traffic_flow(z, x, y):
     key = os.environ.get('TOMTOM_API_KEY')
     if not key:
         return 'Traffic service not configured', 503
-    url = f'https://api.tomtom.com/traffic/map/4/tile/flow/relative/{z}/{x}/{y}.png?key={key}'
+    # Orbis Maps Traffic API (migrated from classic)
+    url = f'https://api.tomtom.com/maps/orbis/traffic/tile/flow/{z}/{x}/{y}.png?key={key}&apiVersion=1&style=light'
     try:
         resp = http_requests.get(url, timeout=10)
         if resp.status_code != 200:
