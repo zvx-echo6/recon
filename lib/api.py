@@ -73,6 +73,10 @@ from .netsyms_api import netsyms_bp, geocode_bp
 app.register_blueprint(netsyms_bp)
 app.register_blueprint(geocode_bp)
 
+# ── Wiki-enrich Blueprint (extraction #5 prep — HTTP wrapper over wiki_index) ──
+from .wiki_enrich_api import wiki_enrich_bp
+app.register_blueprint(wiki_enrich_bp)
+
 
 
 # ── Navigation Constants ──
