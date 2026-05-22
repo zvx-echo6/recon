@@ -77,6 +77,10 @@ app.register_blueprint(geocode_bp)
 from .wiki_enrich_api import wiki_enrich_bp
 app.register_blueprint(wiki_enrich_bp)
 
+# ── Wiki-rewrite Blueprint (extraction #5 prep — HTTP wrapper over rewrite_wiki_link) ──
+from .wiki_rewrite_api import wiki_rewrite_bp
+app.register_blueprint(wiki_rewrite_bp)
+
 
 
 # ── Navigation Constants ──
