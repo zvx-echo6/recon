@@ -1255,15 +1255,6 @@ def api_landclass():
     })
 
 
-@app.route('/api/config')
-def api_config():
-    """Return deployment profile config for frontend consumption."""
-    config = get_deployment_config()
-    resp = jsonify(config)
-    resp.headers['Cache-Control'] = 'public, max-age=300'
-    return resp
-
-
 @app.route('/api/health')
 def api_health():
     """Health check endpoint for monitoring."""
