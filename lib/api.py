@@ -59,14 +59,6 @@ class _LargeZimRequest(_FlaskRequest):
         return super()._get_file_stream(total_content_length, content_type, filename, content_length)
 
 app.request_class = _LargeZimRequest
-# ── Address Book Blueprint ──
-from .address_book_api import address_book_bp
-app.register_blueprint(address_book_bp)
-
-# ── Contacts Blueprint ──
-from .contacts_api import contacts_bp
-app.register_blueprint(contacts_bp)
-
 # ── Netsyms + Geocode Blueprints ──
 from .netsyms_api import netsyms_bp, geocode_bp
 app.register_blueprint(netsyms_bp)
@@ -107,12 +99,6 @@ SETTINGS_SUBNAV = [
     {'href': '/settings/cookies', 'label': 'YouTube Cookies'},
     {'href': '/settings/vpn', 'label': 'NordVPN'},
     {'href': '/settings/health', 'label': 'Service Health'},
-]
-
-NAVI_SUBNAV = [
-    {'href': '/nav-i', 'label': 'Overview'},
-    {'href': '/deleted-contacts', 'label': 'Deleted Contacts'},
-    {'href': '/nav-i/api-keys', 'label': 'API Keys'},
 ]
 
 
@@ -339,36 +325,6 @@ def failures_page():
     return render_template('knowledge/failures.html',
                            domain='knowledge', subnav=KNOWLEDGE_SUBNAV, active_page='/failures',
                            failures=failures)
-
-
-@app.route("/deleted-contacts")
-def deleted_contacts_page():
-    from .auth import get_user_id
-    from .contacts import ContactsDB
-    user_id = get_user_id() or "anonymous"
-    db = ContactsDB()
-    contacts = db.list_deleted(user_id)
-    return render_template("navi/deleted_contacts.html",
-                           domain="navi", subnav=NAVI_SUBNAV, active_page="/deleted-contacts",
-                           contacts=contacts)
-
-
-@app.route("/nav-i")
-def navi_landing_page():
-    from .auth import get_user_id
-    from .contacts import ContactsDB
-    user_id = get_user_id() or "anonymous"
-    db = ContactsDB()
-    deleted_count = len(db.list_deleted(user_id))
-    return render_template("navi/landing.html",
-                           domain="navi", subnav=NAVI_SUBNAV, active_page="/nav-i",
-                           deleted_count=deleted_count)
-
-
-@app.route("/nav-i/api-keys")
-def navi_api_keys_page():
-    return render_template("navi/api_keys.html",
-                           domain="navi", subnav=NAVI_SUBNAV, active_page="/nav-i/api-keys")
 
 
 @app.route('/peertube')
@@ -1408,60 +1364,6 @@ def api_keys_reload():
 
 
 
-# ── Nav-I API Key Admin ──
-
-@app.route('/api/nav-i/api-keys/list', methods=['GET'])
-def navi_api_keys_list():
-    from .api_keys_admin import list_keys
-    return jsonify({'keys': list_keys()})
-
-
-@app.route('/api/nav-i/api-keys/update', methods=['POST'])
-def navi_api_keys_update():
-    from .auth import require_auth
-    from .api_keys_admin import update_key, update_gemini_key
-    data = request.get_json(force=True)
-    name = data.get('name', '')
-    new_value = data.get('new_value', '')
-    index = data.get('index')  # optional, for Gemini key replacement
-    if not name or not new_value:
-        return jsonify({'error': 'name and new_value required'}), 400
-    if name == 'GEMINI_KEY' and index is not None:
-        result = update_gemini_key(int(index), new_value)
-    else:
-        result = update_key(name, new_value)
-    if result.get('success'):
-        return jsonify(result)
-    return jsonify(result), 400
-
-
-@app.route('/api/nav-i/api-keys/test', methods=['POST'])
-def navi_api_keys_test():
-    from .api_keys_admin import test_key
-    data = request.get_json(force=True)
-    name = data.get('name', '')
-    index = data.get('index')  # optional, for testing specific Gemini key
-    if not name:
-        return jsonify({'error': 'name required'}), 400
-    result = test_key(name, index=int(index) if index is not None else None)
-    return jsonify(result)
-
-
-@app.route('/api/nav-i/api-keys/restart-recon', methods=['POST'])
-def navi_api_keys_restart():
-    import subprocess
-    try:
-        result = subprocess.run(
-            ['sudo', 'systemctl', 'restart', 'recon'],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            return jsonify({'success': True, 'note': 'RECON service restarted'})
-        return jsonify({'success': False, 'error': result.stderr.strip()}), 500
-    except subprocess.TimeoutExpired:
-        return jsonify({'success': False, 'error': 'Restart timed out'}), 500
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ── YouTube Cookie Management ──
