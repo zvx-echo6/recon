@@ -59,10 +59,6 @@ class _LargeZimRequest(_FlaskRequest):
         return super()._get_file_stream(total_content_length, content_type, filename, content_length)
 
 app.request_class = _LargeZimRequest
-# ── Contacts Blueprint ──
-from .contacts_api import contacts_bp
-app.register_blueprint(contacts_bp)
-
 # ── Netsyms + Geocode Blueprints ──
 from .netsyms_api import netsyms_bp, geocode_bp
 app.register_blueprint(netsyms_bp)
@@ -106,8 +102,6 @@ SETTINGS_SUBNAV = [
 ]
 
 NAVI_SUBNAV = [
-    {'href': '/nav-i', 'label': 'Overview'},
-    {'href': '/deleted-contacts', 'label': 'Deleted Contacts'},
     {'href': '/nav-i/api-keys', 'label': 'API Keys'},
 ]
 
@@ -335,30 +329,6 @@ def failures_page():
     return render_template('knowledge/failures.html',
                            domain='knowledge', subnav=KNOWLEDGE_SUBNAV, active_page='/failures',
                            failures=failures)
-
-
-@app.route("/deleted-contacts")
-def deleted_contacts_page():
-    from .auth import get_user_id
-    from .contacts import ContactsDB
-    user_id = get_user_id() or "anonymous"
-    db = ContactsDB()
-    contacts = db.list_deleted(user_id)
-    return render_template("navi/deleted_contacts.html",
-                           domain="navi", subnav=NAVI_SUBNAV, active_page="/deleted-contacts",
-                           contacts=contacts)
-
-
-@app.route("/nav-i")
-def navi_landing_page():
-    from .auth import get_user_id
-    from .contacts import ContactsDB
-    user_id = get_user_id() or "anonymous"
-    db = ContactsDB()
-    deleted_count = len(db.list_deleted(user_id))
-    return render_template("navi/landing.html",
-                           domain="navi", subnav=NAVI_SUBNAV, active_page="/nav-i",
-                           deleted_count=deleted_count)
 
 
 @app.route("/nav-i/api-keys")
