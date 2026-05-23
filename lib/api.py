@@ -59,10 +59,9 @@ class _LargeZimRequest(_FlaskRequest):
         return super()._get_file_stream(total_content_length, content_type, filename, content_length)
 
 app.request_class = _LargeZimRequest
-# ── Netsyms + Geocode Blueprints ──
-from .netsyms_api import netsyms_bp, geocode_bp
+# ── Netsyms Blueprint ──
+from .netsyms_api import netsyms_bp
 app.register_blueprint(netsyms_bp)
-app.register_blueprint(geocode_bp)
 
 # ── Wiki-enrich Blueprint (extraction #5 prep — HTTP wrapper over wiki_index) ──
 from .wiki_enrich_api import wiki_enrich_bp
