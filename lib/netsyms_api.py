@@ -8,7 +8,6 @@ GET /api/netsyms/health
 from flask import Blueprint, request, jsonify
 
 from . import netsyms
-from . import address_book
 from .utils import setup_logging
 
 logger = setup_logging('recon.netsyms_api')
