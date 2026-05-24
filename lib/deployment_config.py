@@ -4,12 +4,12 @@ Deployment profile loader.
 Reads RECON_PROFILE env var (default: "home"), loads the matching YAML
 from config/profiles/<profile>.yaml, and caches the parsed dict in memory.
 
-Provides get_deployment_config() for in-process consumers of the profile:
-  - lib/api.py:api_landclass  — the has_landclass feature-flag gate
-  - lib/google_places.py      — Google Places enrichment config
-  - lib/place_detail.py       — place-detail enrichment config (×4 call sites)
-  - lib/offroute/router.py    — profile.offroute.* (osm_pbf_path / postgis_dsn /
-                                densify_interval_m)
+Exposes get_deployment_config() as the in-process accessor for the profile.
+
+Note: its former consumers (the /api/landclass gate, google_places,
+place_detail, offroute/router) were all extracted to navi-* services or removed
+across cleanups #4–#6/#27 — recon has no remaining caller of
+get_deployment_config() today; the module is retained per cleanup #1.
 (The former /api/config HTTP endpoint that served this dict to the frontend was
 removed once navi-config (:8422) took over that route.)
 """
