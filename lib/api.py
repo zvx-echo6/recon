@@ -24,7 +24,6 @@ from werkzeug.utils import secure_filename
 
 from .utils import get_config, content_hash, clean_filename_to_title, derive_source_and_category, generate_download_url, setup_logging
 from .status import StatusDB
-from .deployment_config import get_deployment_config
 
 logger = setup_logging('recon.api')
 
