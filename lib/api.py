@@ -62,10 +62,6 @@ app.request_class = _LargeZimRequest
 from .netsyms_api import netsyms_bp
 app.register_blueprint(netsyms_bp)
 
-# ── Wiki-enrich Blueprint (extraction #5 prep — HTTP wrapper over wiki_index) ──
-from .wiki_enrich_api import wiki_enrich_bp
-app.register_blueprint(wiki_enrich_bp)
-
 # ── Wiki-rewrite Blueprint (extraction #5 prep — HTTP wrapper over rewrite_wiki_link) ──
 from .wiki_rewrite_api import wiki_rewrite_bp
 app.register_blueprint(wiki_rewrite_bp)
