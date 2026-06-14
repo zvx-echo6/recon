@@ -40,7 +40,7 @@ vector_db:
   collection: recon_knowledge_hybrid # Collection name
 
 gemini:
-  model: gemini-2.0-flash     # Gemini model for enrichment
+  model: gemini-2.5-flash-lite     # Gemini model for enrichment
   response_mime_type: application/json  # Force JSON output from Gemini
 
 web:

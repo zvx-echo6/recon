@@ -140,7 +140,7 @@ def enrich_window_text(text, key):
     """Call Gemini on raw window text, return concepts list."""
     genai.configure(api_key=key)
     model = genai.GenerativeModel(
-        "gemini-2.0-flash",
+        "gemini-2.5-flash-lite",
         generation_config={"response_mime_type": "application/json"}
     )
     for attempt in range(4):

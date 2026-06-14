@@ -197,7 +197,7 @@ def _try_gemini_vision(pdf_path, page_num_1indexed, page_timeout=60):
     for attempt in range(3):
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash-lite')
             response = model.generate_content([
                 {
                     'mime_type': 'image/png',
