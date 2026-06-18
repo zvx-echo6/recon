@@ -1,6 +1,6 @@
 # RECON Project Bible v2.0
 
-*Last updated: 2026-02-16*
+*Last updated: 2026-06-18*
 
 ---
 
@@ -131,7 +131,7 @@ Web content enters at `extracted` status (text already extracted by trafilatura)
 
 ### Enrichment Details
 
-- Model: `gemini-2.0-flash`
+- Model: `gemini-2.5-flash-lite`
 - Window size: 10 pages per API call (configurable)
 - Workers: 16 concurrent (4 API keys x 4 workers each)
 - Output format: JSON array of concept objects
@@ -480,7 +480,7 @@ vector_db:
   collection: recon_knowledge  # Collection name
 
 gemini:
-  model: gemini-2.0-flash    # Gemini model for enrichment
+  model: gemini-2.5-flash-lite    # Gemini model for enrichment
   response_mime_type: application/json  # Force JSON output
 
 web:
@@ -728,7 +728,7 @@ recon validate --deep
 
 ## 19. Current State
 
-*As of 2026-02-16*
+*As of 2026-06-18 — verified against live deployment (gemini-2.5-flash-lite enforced).*
 
 ### Pipeline Progress
 
