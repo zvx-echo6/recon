@@ -22,13 +22,13 @@
     }
 
     function setTime(t) {
-        var p = String(t || 02:00).split(:);
-        document.getElementById(ks-time-h).value = (0 + (parseInt(p[0], 10) || 0)).slice(-2);
-        document.getElementById(ks-time-m).value = (0 + (parseInt(p[1], 10) || 0)).slice(-2);
+        var p = String(t || '02:00').split(':');
+        document.getElementById('ks-time-h').value = ('0' + (parseInt(p[0], 10) || 0)).slice(-2);
+        document.getElementById('ks-time-m').value = ('0' + (parseInt(p[1], 10) || 0)).slice(-2);
     }
 
     function getTime() {
-        return document.getElementById(ks-time-h).value + : + document.getElementById(ks-time-m).value;
+        return document.getElementById('ks-time-h').value + ':' + document.getElementById('ks-time-m').value;
     }
 
     function feedback(msg, isErr) {
