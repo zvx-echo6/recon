@@ -135,7 +135,8 @@ def scan_zims():
 
     logger.info("OPDS returned %d entries", len(opds_entries))
 
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    con.execute("PRAGMA busy_timeout=30000")
     con.row_factory = sqlite3.Row
 
     # Get existing zim_sources keyed by filename

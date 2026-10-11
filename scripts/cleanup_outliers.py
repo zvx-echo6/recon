@@ -398,7 +398,8 @@ def pass3_purge_junk(qdrant, collection, dry_run):
         log.info(f"Deleted {len(junk_point_ids)} junk vectors from Qdrant")
 
         # Mark junk docs as skipped in SQLite
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(DB_PATH), timeout=30)
+        conn.execute("PRAGMA busy_timeout=30000")
         for doc_hash in junk_doc_hashes:
             conn.execute(
                 "UPDATE documents SET status = 'skipped', error_message = 'junk content purged' WHERE hash = ?",

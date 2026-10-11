@@ -7,13 +7,118 @@ Status flow: catalogued -> queued -> extracting -> extracted -> enriching -> enr
 Config: paths.db
 """
 import os
+import random
+import re
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 
 from .utils import get_config
 
 _local = threading.local()
+
+# --- Write serialisation -----------------------------------------------------
+# SQLite allows one writer at a time. With 16+ worker threads each holding its own
+# connection, writers used to queue inside SQLite's busy handler (5 s) and fail with
+# "database is locked". All connections handed out by StatusDB now serialise write
+# transactions through one process-wide RLock (held from the first write statement
+# until the transaction ends) and retry "database is locked" with jittered backoff.
+# Reads never take the lock (WAL readers do not block).
+BUSY_TIMEOUT_MS = 30000
+WRITE_RETRY_ATTEMPTS = 5
+WRITE_LOCK_TIMEOUT_S = 60
+
+_WRITE_LOCK = threading.RLock()
+_WRITE_SQL = re.compile(
+    r'\s*(?:/\*.*?\*/\s*)*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|REINDEX|VACUUM|BEGIN)\b',
+    re.I | re.S)
+
+
+def _is_lock_error(exc):
+    msg = str(exc).lower()
+    return 'locked' in msg or 'busy' in msg
+
+
+def _backoff(attempt):
+    time.sleep(min(5.0, 0.25 * (2 ** attempt)) * (0.5 + random.random()))
+
+
+class _LockedConnection(sqlite3.Connection):
+    """sqlite3 connection that serialises write transactions process-wide and retries
+    'database is locked'. Connections are thread-local, so per-instance state is safe."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._held = 0
+
+    def _acquire(self):
+        if not _WRITE_LOCK.acquire(timeout=WRITE_LOCK_TIMEOUT_S):
+            raise sqlite3.OperationalError("database is locked (in-process write lock timeout)")
+        self._held += 1
+
+    def _release_if_idle(self):
+        if not self.in_transaction:
+            while self._held > 0:
+                self._held -= 1
+                _WRITE_LOCK.release()
+
+    def _guarded(self, call, is_write):
+        attempt = 0
+        while True:
+            # Only a statement that starts a fresh transaction is safe to retry.
+            retryable = not self.in_transaction
+            try:
+                if is_write:
+                    self._acquire()
+                return call()
+            except sqlite3.OperationalError as e:
+                if not (retryable and _is_lock_error(e)) or attempt >= WRITE_RETRY_ATTEMPTS - 1:
+                    raise
+            finally:
+                self._release_if_idle()
+            _backoff(attempt)
+            attempt += 1
+
+    def execute(self, sql, *args):
+        return self._guarded(lambda: super(_LockedConnection, self).execute(sql, *args),
+                             bool(_WRITE_SQL.match(sql)))
+
+    def executemany(self, sql, *args):
+        return self._guarded(lambda: super(_LockedConnection, self).executemany(sql, *args),
+                             bool(_WRITE_SQL.match(sql)))
+
+    def executescript(self, script):
+        return self._guarded(lambda: super(_LockedConnection, self).executescript(script), True)
+
+    def commit(self):
+        try:
+            return self._guarded(lambda: super(_LockedConnection, self).commit(), False)
+        finally:
+            self._release_if_idle()
+
+    def rollback(self):
+        try:
+            return super().rollback()
+        finally:
+            self._release_if_idle()
+
+    def close(self):
+        try:
+            return super().close()
+        finally:
+            self._held_release_all()
+
+    def _held_release_all(self):
+        while self._held > 0:
+            self._held -= 1
+            _WRITE_LOCK.release()
+
+    def __exit__(self, *exc):
+        try:
+            return super().__exit__(*exc)
+        finally:
+            self._release_if_idle()
 
 
 class StatusDB:
@@ -25,12 +130,20 @@ class StatusDB:
         self._init_db()
 
     def _get_conn(self):
-        if not hasattr(_local, 'conn') or _local.conn is None:
-            _local.conn = sqlite3.connect(self.db_path, timeout=30)
-            _local.conn.row_factory = sqlite3.Row
-            _local.conn.execute("PRAGMA journal_mode=WAL")
-            _local.conn.execute("PRAGMA busy_timeout=5000")
-        return _local.conn
+        # Connections are cached per thread; key by path so a second StatusDB on a
+        # different file (tests, tools) never reuses the wrong connection.
+        conns = getattr(_local, 'conns', None)
+        if conns is None:
+            conns = _local.conns = {}
+        conn = conns.get(self.db_path)
+        if conn is None:
+            conn = sqlite3.connect(self.db_path, timeout=BUSY_TIMEOUT_MS / 1000,
+                                   factory=_LockedConnection)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+            conns[self.db_path] = conn
+        return conn
 
     def _init_db(self):
         conn = self._get_conn()
