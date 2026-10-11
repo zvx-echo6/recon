@@ -166,23 +166,6 @@ def pre_flight(content_path, meta_path, db, config):
         return result
 
     # ── Step 2: Stale state cleanup ───────────────────────────────
-    processing_root = config.get('pipeline', {}).get(
-        'processing_root', '/opt/recon/data/processing'
-    )
-    proc_dir = os.path.join(processing_root, file_hash)
-    concepts_dir = os.path.join(config['paths']['concepts'], file_hash)
-    if os.path.exists(proc_dir):
-        try:
-            shutil.rmtree(proc_dir)
-        except Exception as e:
-            logger.error("Stale cleanup failed for %s: %s", proc_dir, e)
-            raise
-    if os.path.exists(concepts_dir):
-        try:
-            shutil.rmtree(concepts_dir)
-        except Exception as e:
-            logger.error("Stale cleanup failed for %s: %s", concepts_dir, e)
-            raise
 
     # ── Step 3: Hash dedupe ───────────────────────────────────────
     conn = db._get_conn()
@@ -199,6 +182,33 @@ def pre_flight(content_path, meta_path, db, config):
             logger.warning("Failed to remove duplicate pair: %s", e)
         result['action'] = 'duplicate'
         return result
+
+    # Stale state cleanup (only after the duplicate check): clear leftover
+    # processing/concepts dirs only for a genuinely fresh ingest, never for a
+    # hash that is already catalogued or in documents.
+    processing_root = config.get('pipeline', {}).get(
+        'processing_root', '/opt/recon/data/processing'
+    )
+    proc_dir = os.path.join(processing_root, file_hash)
+    concepts_dir = os.path.join(config['paths']['concepts'], file_hash)
+    known = conn.execute(
+        "SELECT 1 FROM documents WHERE hash = ?", (file_hash,)
+    ).fetchone()
+    if known:
+        logger.info("Hash %s already in documents; leaving existing dirs untouched", file_hash[:8])
+    else:
+        if os.path.exists(proc_dir):
+            try:
+                shutil.rmtree(proc_dir)
+            except Exception as e:
+                logger.error("Stale cleanup failed for %s: %s", proc_dir, e)
+                raise
+        if os.path.exists(concepts_dir):
+            try:
+                shutil.rmtree(concepts_dir)
+            except Exception as e:
+                logger.error("Stale cleanup failed for %s: %s", concepts_dir, e)
+                raise
 
     # ── Step 4: Read text content ─────────────────────────────────
     try:
