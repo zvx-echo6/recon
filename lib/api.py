@@ -2136,6 +2136,46 @@ def api_kiwix_upload():
 
 
 
+def _kiwix_book_id_for(zim_filename, library_xml='/mnt/kiwix/library.xml'):
+    """Look up a book's id (UUID) in library.xml by ZIM file name via 'kiwix-manage show'."""
+    import subprocess
+    try:
+        res = subprocess.run(['/opt/recon/bin/kiwix-manage', library_xml, 'show'],
+                             capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        logger.warning(f"kiwix-manage show failed: {e}")
+        return None
+    book_id = None
+    for line in res.stdout.splitlines():
+        if line.startswith('id:'):
+            book_id = line.split(':', 1)[1].strip()
+        elif line.startswith('path:') and book_id:
+            if os.path.basename(line.split(':', 1)[1].strip()) == zim_filename:
+                return book_id
+    return None
+
+
+def _kiwix_remove_book(zim_filename, zim_uuid=None, library_xml='/mnt/kiwix/library.xml'):
+    """Remove a ZIM from library.xml. kiwix-manage 'remove' takes the book id (UUID), not
+    the file name. Returns True when the book is gone from the library."""
+    import subprocess
+    book_id = zim_uuid or _kiwix_book_id_for(zim_filename, library_xml)
+    if not book_id:
+        logger.warning(f"kiwix-manage remove: no book id found for {zim_filename}")
+        return False
+    try:
+        res = subprocess.run(['/opt/recon/bin/kiwix-manage', library_xml, 'remove', book_id],
+                             capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        logger.warning(f"kiwix-manage remove failed: {e}")
+        return False
+    if res.returncode != 0:
+        logger.warning(f"kiwix-manage remove {book_id} ({zim_filename}) rc={res.returncode}: "
+                       f"{(res.stderr or res.stdout).strip()}")
+        return False
+    return True
+
+
 def _full_zim_cleanup(source_id):
     """Full ZIM cleanup: Qdrant vectors, DB records, kiwix-manage, SIGHUP, file delete.
     Returns dict with results. Caller handles cache refresh."""
@@ -2211,13 +2251,7 @@ def _full_zim_cleanup(source_id):
     conn.commit()
 
     # Step 4: Remove from kiwix-serve library
-    try:
-        subprocess.run(
-            ['/opt/recon/bin/kiwix-manage', '/mnt/kiwix/library.xml', 'remove', zim_filename.replace('.zim', '')],
-            capture_output=True, text=True, timeout=10
-        )
-    except Exception as e:
-        logger.warning(f"kiwix-manage remove failed: {e}")
+    _kiwix_remove_book(zim_filename, zim_source.get('zim_uuid'))
 
     # Step 4b: SIGHUP kiwix-serve to reload library
     try:
@@ -2501,14 +2535,7 @@ def api_scraper_delete(job_id):
                 logger.info(f"Deleted orphan ZIM file: {zim_path}")
             except Exception as e:
                 logger.warning(f"Failed to delete orphan ZIM file {zim_path}: {e}")
-            try:
-                subprocess.run(
-                    ['/opt/recon/bin/kiwix-manage', '/mnt/kiwix/library.xml', 'remove',
-                     job['zim_filename'].replace('.zim', '')],
-                    capture_output=True, text=True, timeout=10
-                )
-            except Exception as e:
-                logger.warning(f"kiwix-manage remove failed for orphan: {e}")
+            _kiwix_remove_book(job['zim_filename'])
             try:
                 result = subprocess.run(['pidof', 'kiwix-serve'], capture_output=True, text=True, timeout=5)
                 if result.returncode == 0 and result.stdout.strip():
