@@ -134,21 +134,44 @@ def get_embeddings_batch(texts, config):
 def get_sparse_embeddings_batch(texts, config):
     """Get sparse embeddings from the sparse embedding service on cortex.
 
-    Returns a list of dicts with 'indices' and 'values' keys, or None on failure.
+    The service encodes serially on one thread, so a large request can exceed the HTTP
+    timeout (a 128-text request timed out repeatedly under load, silently leaving points
+    dense-only). Requests are therefore sent in small chunks (sparse_embedding.chunk_size,
+    default 32), each retried once. Returns a list aligned with `texts` of dicts with
+    'indices'/'values' (None for any chunk that still failed), or None if sparse is off.
     """
     sparse_cfg = config.get('sparse_embedding')
     if not sparse_cfg or not sparse_cfg.get('enabled', False):
         return None
 
     url = f"http://{sparse_cfg['host']}:{sparse_cfg['port']}/embed_sparse"
-
-    try:
-        resp = http_requests.post(url, json={"inputs": texts}, timeout=300)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        logger.warning(f"  Sparse embedding failed for batch of {len(texts)}: {e}")
-        return None
+    chunk = max(1, int(sparse_cfg.get('chunk_size', 32)))
+    timeout = int(sparse_cfg.get('chunk_timeout', 180))
+    out = []
+    failed = 0
+    for start in range(0, len(texts), chunk):
+        part = texts[start:start + chunk]
+        result = None
+        for attempt in range(2):
+            try:
+                resp = http_requests.post(url, json={"inputs": part}, timeout=timeout)
+                resp.raise_for_status()
+                result = resp.json()
+                if len(result) != len(part):
+                    result = None
+                else:
+                    break
+            except Exception as e:
+                logger.warning(f"  Sparse embedding failed for chunk of {len(part)} "
+                               f"(attempt {attempt + 1}/2): {e}")
+        if result is None:
+            failed += len(part)
+            out.extend([None] * len(part))
+        else:
+            out.extend(result)
+    if failed:
+        logger.warning(f"  {failed}/{len(texts)} points in this batch will be stored dense-only (sparse failed)")
+    return out
 
 
 def _validate_content(content):
