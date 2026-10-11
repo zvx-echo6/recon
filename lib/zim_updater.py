@@ -522,10 +522,22 @@ def _spawn_ingest(source_id):
 
 
 def _file_perms(path):
-    os.chmod(path, 0o644)
-    owner = kcfg().get('file_owner')
-    if owner:
-        shutil.chown(path, *owner.split(':', 1)) if ':' in owner else shutil.chown(path, owner)
+    """Make a ZIM readable by kiwix-serve (0644) and apply kiwix.file_owner.
+
+    Zimit runs in a container as root, so a freshly crawled ZIM is root-owned and recon
+    (running as an unprivileged user) cannot chmod/chown it. That is fine as long as the
+    file is already world-readable: recon owns the directory, so it can still rename and
+    delete the file. Only fail when the file is genuinely unreadable by others."""
+    try:
+        os.chmod(path, 0o644)
+        owner = kcfg().get('file_owner')
+        if owner:
+            shutil.chown(path, *owner.split(':', 1)) if ':' in owner else shutil.chown(path, owner)
+    except PermissionError as e:
+        if os.stat(path).st_mode & 0o004:
+            logger.warning("could not change permissions on %s (%s); already world-readable, continuing", path, e)
+        else:
+            raise
 
 
 def _preflight_index(old):
