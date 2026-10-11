@@ -44,6 +44,42 @@ def _backoff(attempt):
     time.sleep(min(5.0, 0.25 * (2 ** attempt)) * (0.5 + random.random()))
 
 
+_LIB_INDEX = {'built': 0.0, 'by_size': {}, 'by_name': {}}
+_LIB_INDEX_LOCK = threading.Lock()
+_LIB_INDEX_TTL_S = 600
+
+
+def _norm_name(filename):
+    return re.sub(r'[^a-z0-9]', '', os.path.splitext(filename)[0].lower())
+
+
+def _library_pdf_index(config):
+    """(by_size, by_name): library PDFs keyed by byte size and by normalised file name,
+    cached for 10 minutes. Only used when a failed document has lost its source and is
+    being retried (see find_source_pdf)."""
+    with _LIB_INDEX_LOCK:
+        if time.time() - _LIB_INDEX['built'] < _LIB_INDEX_TTL_S and _LIB_INDEX['built']:
+            return _LIB_INDEX['by_size'], _LIB_INDEX['by_name']
+        root = config.get('library_root', '/mnt/library')
+        by_size = {}
+        by_name = {}
+        for dirpath, dirnames, filenames in os.walk(root):
+            if dirpath == root:
+                dirnames[:] = [d for d in dirnames if d not in ('_holding',)]
+            for f in filenames:
+                if f.lower().endswith('.pdf'):
+                    p = os.path.join(dirpath, f)
+                    by_name.setdefault(_norm_name(f), []).append(p)
+                    try:
+                        by_size.setdefault(os.path.getsize(p), []).append(p)
+                    except OSError:
+                        pass
+        _LIB_INDEX['by_size'] = by_size
+        _LIB_INDEX['by_name'] = by_name
+        _LIB_INDEX['built'] = time.time()
+        return by_size, by_name
+
+
 class _LockedConnection(sqlite3.Connection):
     """sqlite3 connection that serialises write transactions process-wide and retries
     'database is locked'. Connections are thread-local, so per-instance state is safe."""
@@ -415,16 +451,83 @@ class StatusDB:
         )
         conn.commit()
 
-    def retry_target(self, file_hash):
-        """Stage a failed/queued document should resume at, or None if it cannot be retried.
+    @staticmethod
+    def _dir_has_pages(d):
+        try:
+            return bool(d) and os.path.isdir(d) and any(
+                f.startswith('page_') and f.endswith('.txt') for f in os.listdir(d))
+        except OSError:
+            return False
 
-        'enriched'  - enrichment finished (concepts on disk); re-run embedding
-        'extracted' - extracted text with pages exists; re-run enrichment
-        None        - no extracted text on disk; the running service has no
-                      status-based re-extraction (the dispatcher only ingests
-                      files from watch folders), so it is left alone.
-        """
-        from .utils import get_config, resolve_text_dir
+    def locate_text_dir(self, file_hash):
+        """First directory holding extracted page files for this document, or None.
+        Checks documents.text_dir, the legacy data/text/<hash>, and processing/<hash>."""
+        from .utils import get_config
+        config = get_config()
+        conn = self._get_conn()
+        row = conn.execute("SELECT text_dir FROM documents WHERE hash = ?", (file_hash,)).fetchone()
+        processing_root = config.get('pipeline', {}).get('processing_root', '/opt/recon/data/processing')
+        for d in (row['text_dir'] if row else None,
+                  os.path.join(config['paths']['text'], file_hash),
+                  os.path.join(processing_root, file_hash)):
+            if self._dir_has_pages(d):
+                return d
+        return None
+
+    def find_source_pdf(self, file_hash):
+        """Path of a PDF whose content hash equals file_hash, or None.
+
+        Candidates: documents.path, processing/<hash>/source.pdf, catalogue.path, and the
+        file_operations history (filing moves). Every candidate is verified by md5, so a
+        renamed/replaced file is never mistaken for the original."""
+        from .utils import get_config, content_hash
+        config = get_config()
+        conn = self._get_conn()
+        processing_root = config.get('pipeline', {}).get('processing_root', '/opt/recon/data/processing')
+        cands = []
+        row = conn.execute("SELECT path FROM documents WHERE hash = ?", (file_hash,)).fetchone()
+        if row and row['path']:
+            cands.append(row['path'])
+        cands.append(os.path.join(processing_root, file_hash, 'source.pdf'))
+        row = conn.execute("SELECT path FROM catalogue WHERE hash = ?", (file_hash,)).fetchone()
+        if row and row['path']:
+            cands.append(row['path'])
+        for r in conn.execute(
+                "SELECT target_path, source_path FROM file_operations WHERE doc_hash = ? "
+                "ORDER BY id DESC", (file_hash,)):
+            cands.extend([r['target_path'], r['source_path']])
+        seen = set()
+
+        def verified(p):
+            if not p or p in seen or not p.startswith('/') or not p.lower().endswith('.pdf'):
+                return False
+            seen.add(p)
+            try:
+                return os.path.isfile(p) and content_hash(p) == file_hash
+            except OSError:
+                return False
+
+        for p in cands:
+            if verified(p):
+                return p
+        # The filing worker moves finished PDFs into the library (not always logged in
+        # file_operations): look for a library PDF of the same size or file name, md5-verified.
+        drow = conn.execute("SELECT size_bytes, filename FROM documents WHERE hash = ?",
+                            (file_hash,)).fetchone()
+        if drow:
+            by_size, by_name = _library_pdf_index(config)
+            lib_cands = list(by_size.get(drow['size_bytes'], [])[:8]) if drow['size_bytes'] else []
+            lib_cands += by_name.get(_norm_name(drow['filename'] or ''), [])[:8]
+            for p in lib_cands:
+                if verified(p):
+                    return p
+        return None
+
+    def _plan_retry(self, file_hash):
+        """Work out where a failed/queued document should resume. Returns a dict with
+        target ('enriched' | 'extracted' | 'queued'), text_dir (dir with pages or None) and
+        source (verified PDF path or None), or None when it cannot be retried."""
+        from .utils import get_config
         conn = self._get_conn()
         row = conn.execute(
             "SELECT enriched_at, concepts_extracted FROM documents WHERE hash = ?",
@@ -432,36 +535,72 @@ class StatusDB:
         if row is None:
             return None
         config = get_config()
-        text_dir = resolve_text_dir(file_hash, config, self)
-        try:
-            has_pages = os.path.isdir(text_dir) and any(
-                f.startswith('page_') and f.endswith('.txt') for f in os.listdir(text_dir))
-        except OSError:
-            has_pages = False
-        if not has_pages:
-            return None
+        text_dir = self.locate_text_dir(file_hash)
+        if text_dir is None:
+            source = self.find_source_pdf(file_hash)
+            if source is None:
+                return None
+            return {'target': 'queued', 'text_dir': None, 'source': source}
         if row['enriched_at'] and (row['concepts_extracted'] or 0) > 0:
             cdir = os.path.join(config['paths']['concepts'], file_hash)
             try:
                 if os.path.isdir(cdir) and os.listdir(cdir):
-                    return 'enriched'
+                    return {'target': 'enriched', 'text_dir': text_dir, 'source': None}
             except OSError:
                 pass
-        return 'extracted'
+        return {'target': 'extracted', 'text_dir': text_dir, 'source': None}
+
+    def retry_target(self, file_hash):
+        """Stage a failed/queued document should resume at, or None if it cannot be retried.
+
+        'enriched'  - enrichment finished (concepts on disk); re-run embedding
+        'extracted' - extracted text with pages exists; re-run enrichment (this stage also
+                      creates the concepts directory, so a missing concepts dir lands here)
+        'queued'    - no extracted text, but the source PDF is still on disk (md5-verified);
+                      the service's queued-extraction thread re-extracts it
+        None        - no text and no source: unrecoverable, left failed
+        """
+        plan = self._plan_retry(file_hash)
+        return plan['target'] if plan else None
 
     def increment_retry(self, file_hash, count_retry=True):
         """Re-queue a document to the stage it failed at. Returns the new status, or None
         if it cannot be retried (left untouched)."""
-        target = self.retry_target(file_hash)
-        if target is None:
+        plan = self._plan_retry(file_hash)
+        if plan is None:
             return None
+        sets = ["retry_count = retry_count + ?", "status = ?", "error_message = NULL"]
+        vals = [1 if count_retry else 0, plan['target']]
+        if plan['text_dir']:
+            # The pages may live somewhere other than documents.text_dir (legacy data/text);
+            # point the row at them so the next stage finds them.
+            sets.append("text_dir = ?")
+            vals.append(plan['text_dir'])
+        if plan['source']:
+            sets.append("path = ?")
+            vals.append(plan['source'])
+        vals.append(file_hash)
         conn = self._get_conn()
-        conn.execute(
-            "UPDATE documents SET retry_count = retry_count + ?, status = ?, error_message = NULL WHERE hash = ?",
-            (1 if count_retry else 0, target, file_hash)
-        )
+        conn.execute(f"UPDATE documents SET {', '.join(sets)} WHERE hash = ?", vals)
         conn.commit()
-        return target
+        return plan['target']
+
+    def reset_extracting_to_queued(self):
+        """Startup: documents left in 'extracting' belong to a previous run; requeue them."""
+        conn = self._get_conn()
+        cur = conn.execute("UPDATE documents SET status = 'queued' WHERE status = 'extracting'")
+        conn.commit()
+        return cur.rowcount
+
+    def next_queued_pdf(self, min_age_minutes=10):
+        """Oldest 'queued' document with a PDF path, old enough that a processor is not still
+        in the middle of registering it (queue_document -> 'extracted' takes milliseconds)."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM documents WHERE status = 'queued' AND lower(path) LIKE '%.pdf' "
+            "AND discovered_at < datetime('now', ?) ORDER BY discovered_at LIMIT 1",
+            (f'-{int(min_age_minutes)} minutes',)).fetchone()
+        return dict(row) if row else None
 
     def get_sources(self):
         conn = self._get_conn()

@@ -610,6 +610,7 @@ def cmd_service(args):
     from lib.embedder import run_embedding
     from lib.api import app, run_server as start_dashboard
     from lib.dispatcher import dispatch_loop
+    from lib.extractor import queued_extraction_loop
     from lib.filing import filing_worker_loop
     from lib.acquisition.peertube import acquisition_loop
 
@@ -684,6 +685,8 @@ def cmd_service(args):
                          args=('enrich', lambda: run_enrichment(workers=enrich_workers))),
         threading.Thread(target=stage_loop, daemon=True, name='embed',
                          args=('embed', lambda: run_embedding(workers=embed_workers))),
+        threading.Thread(target=lambda: queued_extraction_loop(stop_event, db=StatusDB(), interval=stage_poll_interval),
+                         daemon=True, name='reextract'),
         threading.Thread(target=lambda: filing_worker_loop(stop_event, db, config, interval=filing_interval),
                          daemon=True, name='filing'),
         threading.Thread(target=lambda: acquisition_loop(stop_event, db, config,

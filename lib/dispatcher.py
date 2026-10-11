@@ -181,6 +181,12 @@ _job_ctx = threading.local()     # per-worker: list of hashes claimed by the cur
 _stopping = threading.Event()    # set at shutdown: stop submitting, abort long jobs
 
 
+def running_jobs():
+    """Number of dispatch jobs currently inside pre_flight (used to give intake priority)."""
+    with _state_lock:
+        return len(_inflight_paths)
+
+
 def stop_requested():
     """True once shutdown began; long-running processors poll this between units of work."""
     return _stopping.is_set()

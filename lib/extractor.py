@@ -564,6 +564,7 @@ def extract_single(file_hash, db, config):
             'page_count': page_count,
             'pages_extracted': pages_extracted,
             'book_title': book_title,
+            'text_dir': text_dir,   # later stages resolve pages via documents.text_dir
         }
         if book_author:
             kwargs['book_author'] = book_author
@@ -620,6 +621,7 @@ def _save_partial(file_hash, db, doc, config, text_dir, page_count,
         json.dump(meta, f, indent=2)
 
     db.update_status(file_hash, 'extracted',
+                     text_dir=text_dir,
                      page_count=page_count,
                      pages_extracted=pages_extracted,
                      book_title=book_title,
@@ -652,3 +654,34 @@ def run_extraction(workers=None):
 
     logger.info(f"Extraction complete: {success}/{len(queued)} succeeded")
     return success
+
+
+def queued_extraction_loop(stop_event, db=None, interval=30, min_age_minutes=10):
+    """Service thread: re-extract documents sitting in status 'queued' (e.g. failed docs
+    retried with no extracted text). One job at a time, and only while the dispatcher has
+    no intake job running, so new files always take priority. Never raises."""
+    from . import dispatcher
+    config = get_config()
+    db = db or StatusDB()
+    try:
+        n = db.reset_extracting_to_queued()
+        if n:
+            logger.info(f"[reextract] Requeued {n} document(s) left in 'extracting' by a previous run")
+    except Exception as e:
+        logger.error(f"[reextract] startup reset failed: {e}")
+    logger.info("[reextract] Queued-extraction thread started (1 job at a time, below intake)")
+
+    while not stop_event.is_set():
+        worked = False
+        try:
+            if dispatcher.running_jobs() == 0:
+                doc = db.next_queued_pdf(min_age_minutes)
+                if doc:
+                    logger.info(f"[reextract] Extracting {doc['filename']} ({doc['hash'][:8]})")
+                    ok = extract_single(doc['hash'], db, config)
+                    logger.info(f"[reextract] {doc['hash'][:8]} -> {'extracted' if ok else 'failed'}")
+                    worked = True
+        except Exception as e:
+            logger.error(f"[reextract] error: {e}", exc_info=True)
+        stop_event.wait(2 if worked else interval)
+    logger.info("[reextract] Queued-extraction thread stopped")
