@@ -421,6 +421,17 @@ scraper:
   docker_image: ghcr.io/openzim/zimit     # Zimit Docker image for web crawling
   docker_workers: 2                       # Concurrent crawl workers inside Zimit container
 
+# Kiwix library + ZIM updates (lib/kiwix_cfg.py, lib/zim_updater.py). Values shown are the defaults.
+kiwix:
+  dir: /mnt/kiwix                              # ZIM files, library.xml, .previous/ copies
+  manage_bin: /opt/recon/bin/kiwix-manage
+  serve_url: http://localhost:8430             # local kiwix-serve (OPDS)
+  catalog_url: https://opds.library.kiwix.org  # official Kiwix catalog (OPDS)
+  sighup_serve: true                           # SIGHUP kiwix-serve after library changes
+  timezone: America/Boise                      # update schedules + calendar
+  daily_check_time: "03:00"                    # daily catalog check (local time)
+  scheduler: true                              # run the update scheduler thread
+
 # Stream B: New Library Pipeline
 # Filing worker (lib/filing.py): files completed processing/ items into the library
 filing:

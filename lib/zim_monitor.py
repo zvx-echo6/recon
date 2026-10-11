@@ -14,8 +14,9 @@ import sys
 import urllib.request
 from xml.etree import ElementTree as ET
 
-sys.path.insert(0, "/opt/recon")
-from lib.utils import setup_logging
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from lib.utils import setup_logging, get_config
+from lib.kiwix_cfg import kcfg
 
 try:
     from libzim.reader import Archive
@@ -23,9 +24,12 @@ try:
 except ImportError:
     HAVE_LIBZIM = False
 
-OPDS_URL = "http://localhost:8430/catalog/v2/entries?count=-1"
-ZIM_DIR = "/mnt/kiwix"
-DB_PATH = "/opt/recon/data/recon.db"
+def _opds_url():
+    return kcfg()["serve_url"].rstrip("/") + "/catalog/v2/entries?count=-1"
+
+
+def _db_path():
+    return get_config().get("paths", {}).get("db", "/opt/recon/data/recon.db")
 
 ATOM_NS = "http://www.w3.org/2005/Atom"
 
@@ -56,7 +60,7 @@ def parse_counter(counter_str):
 def fetch_opds():
     """Fetch OPDS v2 catalog from kiwix-serve. Returns list of dicts."""
     try:
-        with urllib.request.urlopen(OPDS_URL, timeout=10) as resp:
+        with urllib.request.urlopen(_opds_url(), timeout=10) as resp:
             data = resp.read()
     except Exception as e:
         logger.error("Failed to fetch OPDS catalog: %s", e)
@@ -135,7 +139,7 @@ def scan_zims():
 
     logger.info("OPDS returned %d entries", len(opds_entries))
 
-    con = sqlite3.connect(DB_PATH, timeout=30)
+    con = sqlite3.connect(_db_path(), timeout=30)
     con.execute("PRAGMA busy_timeout=30000")
     con.row_factory = sqlite3.Row
 
@@ -160,7 +164,7 @@ def scan_zims():
             continue
 
         # New ZIM — read accurate metadata via python-libzim
-        zim_path = os.path.join(ZIM_DIR, filename)
+        zim_path = os.path.join(kcfg()["dir"], filename)
         if not os.path.isfile(zim_path):
             logger.warning("ZIM file not found on disk: %s", zim_path)
             continue

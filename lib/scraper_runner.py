@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from .utils import setup_logging
 from .status import StatusDB
+from .kiwix_cfg import kcfg, reload_kiwix_serve
 
 logger = setup_logging('recon.scraper_runner')
 
@@ -129,7 +130,7 @@ def _crawl_zimit(job, config, stop_event, db):
     category = job.get('category') or ''
 
     scraper_cfg = config.get('scraper', {})
-    output_dir = scraper_cfg.get('output_dir', '/mnt/kiwix')
+    output_dir = scraper_cfg.get('output_dir', kcfg()['dir'])
     docker_image = scraper_cfg.get('docker_image', 'ghcr.io/openzim/zimit')
     docker_workers = scraper_cfg.get('docker_workers', 2)
 
@@ -316,10 +317,10 @@ def _process_job(job, config, stop_event):
 
     db.update_scrape_job(job_id, status='registering')
 
-    output_dir = config.get('scraper', {}).get('output_dir', '/mnt/kiwix')
+    output_dir = config.get('scraper', {}).get('output_dir', kcfg()['dir'])
     zim_path = os.path.join(output_dir, zim_filename)
-    kiwix_manage = shutil.which('kiwix-manage') or '/opt/recon/bin/kiwix-manage'
-    library_xml = '/mnt/kiwix/library.xml'
+    kiwix_manage = kcfg()['manage_bin'] if os.path.exists(kcfg()['manage_bin']) else (shutil.which('kiwix-manage') or kcfg()['manage_bin'])
+    library_xml = kcfg()['library_xml']
 
     try:
         subprocess.run(
@@ -330,14 +331,7 @@ def _process_job(job, config, stop_event):
     except Exception as e:
         logger.warning(f"Job {job_id}: kiwix-manage add failed: {e}")
 
-    try:
-        result = subprocess.run(['pidof', 'kiwix-serve'], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0 and result.stdout.strip():
-            pid = int(result.stdout.strip().split()[0])
-            os.kill(pid, signal.SIGHUP)
-            logger.info(f"Job {job_id}: sent SIGHUP to kiwix-serve (pid {pid})")
-    except Exception as e:
-        logger.warning(f"Job {job_id}: failed to signal kiwix-serve: {e}")
+    reload_kiwix_serve()
 
     # Wait for kiwix-serve to reload its catalog after SIGHUP
     time.sleep(3)
@@ -376,7 +370,7 @@ def _handle_cancel(db, job_id):
         pass
 
     # Clean up tmp dir if it exists
-    output_dir = '/mnt/kiwix'
+    output_dir = kcfg()['dir']
     tmp_dir = os.path.join(output_dir, f'.zimit-tmp-{job_id}')
     shutil.rmtree(tmp_dir, ignore_errors=True)
 

@@ -24,6 +24,7 @@ from werkzeug.utils import secure_filename
 
 from .utils import get_config, content_hash, clean_filename_to_title, derive_source_and_category, generate_download_url, setup_logging
 from .status import StatusDB
+from .kiwix_cfg import kcfg, reload_kiwix_serve
 
 logger = setup_logging('recon.api')
 
@@ -53,7 +54,7 @@ from flask import Request as _FlaskRequest
 class _LargeZimRequest(_FlaskRequest):
     def _get_file_stream(self, total_content_length, content_type, filename=None, content_length=None):
         if filename and filename.lower().endswith('.zim'):
-            return tempfile.NamedTemporaryFile('wb+', dir='/mnt/kiwix', prefix='.upload_', suffix='.tmp', delete=False)
+            return tempfile.NamedTemporaryFile('wb+', dir=kcfg()['dir'], prefix='.upload_', suffix='.tmp', delete=False)
         return super()._get_file_stream(total_content_length, content_type, filename, content_length)
 
 app.request_class = _LargeZimRequest
@@ -2086,7 +2087,7 @@ def api_kiwix_upload():
         return jsonify({'error': 'File must be a .zim file'}), 400
 
     filename = secure_filename(f.filename)
-    dest = os.path.join('/mnt/kiwix', filename)
+    dest = os.path.join(kcfg()['dir'], filename)
 
     try:
         # Stream was written directly to /mnt/kiwix/ by _LargeZimRequest —
@@ -2109,7 +2110,7 @@ def api_kiwix_upload():
     # Register with kiwix-serve library
     try:
         subprocess.run(
-            ['/opt/recon/bin/kiwix-manage', '/mnt/kiwix/library.xml', 'add', dest],
+            [kcfg()['manage_bin'], kcfg()['library_xml'], 'add', dest],
             capture_output=True, text=True, timeout=30
         )
     except Exception as e:
@@ -2136,11 +2137,12 @@ def api_kiwix_upload():
 
 
 
-def _kiwix_book_id_for(zim_filename, library_xml='/mnt/kiwix/library.xml'):
+def _kiwix_book_id_for(zim_filename, library_xml=None):
     """Look up a book's id (UUID) in library.xml by ZIM file name via 'kiwix-manage show'."""
     import subprocess
+    library_xml = library_xml or kcfg()['library_xml']
     try:
-        res = subprocess.run(['/opt/recon/bin/kiwix-manage', library_xml, 'show'],
+        res = subprocess.run([kcfg()['manage_bin'], library_xml, 'show'],
                              capture_output=True, text=True, timeout=30)
     except Exception as e:
         logger.warning(f"kiwix-manage show failed: {e}")
@@ -2155,16 +2157,17 @@ def _kiwix_book_id_for(zim_filename, library_xml='/mnt/kiwix/library.xml'):
     return None
 
 
-def _kiwix_remove_book(zim_filename, zim_uuid=None, library_xml='/mnt/kiwix/library.xml'):
+def _kiwix_remove_book(zim_filename, zim_uuid=None, library_xml=None):
     """Remove a ZIM from library.xml. kiwix-manage 'remove' takes the book id (UUID), not
     the file name. Returns True when the book is gone from the library."""
     import subprocess
+    library_xml = library_xml or kcfg()['library_xml']
     book_id = zim_uuid or _kiwix_book_id_for(zim_filename, library_xml)
     if not book_id:
         logger.warning(f"kiwix-manage remove: no book id found for {zim_filename}")
         return False
     try:
-        res = subprocess.run(['/opt/recon/bin/kiwix-manage', library_xml, 'remove', book_id],
+        res = subprocess.run([kcfg()['manage_bin'], library_xml, 'remove', book_id],
                              capture_output=True, text=True, timeout=30)
     except Exception as e:
         logger.warning(f"kiwix-manage remove failed: {e}")
@@ -2254,14 +2257,7 @@ def _full_zim_cleanup(source_id):
     _kiwix_remove_book(zim_filename, zim_source.get('zim_uuid'))
 
     # Step 4b: SIGHUP kiwix-serve to reload library
-    try:
-        result = subprocess.run(['pidof', 'kiwix-serve'], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0 and result.stdout.strip():
-            pid = int(result.stdout.strip().split()[0])
-            os.kill(pid, signal.SIGHUP)
-            logger.info(f"Sent SIGHUP to kiwix-serve (pid {pid})")
-    except Exception as e:
-        logger.warning(f"Failed to signal kiwix-serve: {e}")
+    reload_kiwix_serve()
 
     # Step 5: Delete the ZIM file
     if os.path.isfile(zim_path):
@@ -2391,7 +2387,7 @@ def _build_kiwix_sources():
     # Check kiwix-serve health
     kiwix_status = 'inactive'
     try:
-        resp = urllib.request.urlopen("http://localhost:8430", timeout=3)
+        resp = urllib.request.urlopen(kcfg()["serve_url"], timeout=3)
         if resp.status == 200:
             kiwix_status = 'active'
     except Exception:
@@ -2528,7 +2524,7 @@ def api_scraper_delete(job_id):
             pass
     elif job.get('zim_filename'):
         # No zim_source row, but there may be an orphan file + library entry
-        zim_path = os.path.join('/mnt/kiwix', job['zim_filename'])
+        zim_path = os.path.join(kcfg()['dir'], job['zim_filename'])
         if os.path.isfile(zim_path):
             try:
                 os.remove(zim_path)
@@ -2536,14 +2532,7 @@ def api_scraper_delete(job_id):
             except Exception as e:
                 logger.warning(f"Failed to delete orphan ZIM file {zim_path}: {e}")
             _kiwix_remove_book(job['zim_filename'])
-            try:
-                result = subprocess.run(['pidof', 'kiwix-serve'], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0 and result.stdout.strip():
-                    pid = int(result.stdout.strip().split()[0])
-                    os.kill(pid, signal.SIGHUP)
-                    logger.info(f"Sent SIGHUP to kiwix-serve (pid {pid})")
-            except Exception as e:
-                logger.warning(f"Failed to signal kiwix-serve: {e}")
+            reload_kiwix_serve()
 
     # Delete the scrape_jobs row (may already be gone if _full_zim_cleanup deleted it)
     conn = db._get_conn()
