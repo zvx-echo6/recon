@@ -28,7 +28,7 @@ from .status import StatusDB
 from .utils import resolve_text_dir
 
 try:
-    from langdetect import detect as _detect_lang
+    from langdetect import detect_langs as _detect_langs, DetectorFactory as _DetectorFactory
     from langdetect.lang_detect_exception import LangDetectException
     _HAS_LANGDETECT = True
 except ImportError:
@@ -350,12 +350,39 @@ def validate_and_fix_concepts(concepts, key, config):
     return concepts
 
 
+def _page_sort_key(name):
+    m = re.search(r'(\d+)', name)
+    return (int(m.group(1)) if m else 0, name)
+
+
+def _build_lang_sample(text_dir, max_chars=6000, max_pages=15, min_page_chars=200):
+    """Concatenate text from pages in order, skipping near-empty pages."""
+    page_files = sorted([f for f in os.listdir(text_dir)
+                         if f.startswith('page_') and f.endswith('.txt')],
+                        key=_page_sort_key)
+    parts = []
+    total = 0
+    used = 0
+    for name in page_files:
+        if used >= max_pages or total >= max_chars:
+            break
+        with open(os.path.join(text_dir, name), encoding='utf-8', errors='replace') as f:
+            txt = f.read().strip()
+        if len(txt) < min_page_chars:
+            continue
+        parts.append(txt)
+        total += len(txt)
+        used += 1
+    return '\n'.join(parts)[:max_chars + 2000] if parts else '', bool(page_files)
+
+
 def _check_language(text_dir, config):
     """Check language of document text. Returns (is_allowed, detected_lang).
 
-    Reads first 1000 chars from first page file and uses langdetect.
-    Returns (True, lang) if language is allowed, (False, lang) if not.
-    Falls back to (True, 'unknown') if detection fails (benefit of the doubt).
+    Samples up to ~6000 chars from up to 15 substantive pages (>= 200 chars each)
+    and uses langdetect.detect_langs with a fixed seed. A document is rejected only
+    when the top language is not allowed with probability >= 0.90 AND no allowed
+    language has probability >= 0.10. Everything else passes (fail-open).
     """
     if not _HAS_LANGDETECT:
         return True, 'unknown'
@@ -367,19 +394,22 @@ def _check_language(text_dir, config):
 
     allowed = set(pipeline_cfg.get('allowed_languages', ['en']))
 
-    # Read first page for detection
-    page_files = sorted([f for f in os.listdir(text_dir)
-                         if f.startswith('page_') and f.endswith('.txt')])
-    if not page_files:
-        return True, 'no_pages'
-
     try:
-        with open(os.path.join(text_dir, page_files[0]), encoding='utf-8') as f:
-            sample = f.read(1500)
-        if len(sample.strip()) < 50:
+        sample, has_pages = _build_lang_sample(text_dir)
+        if not has_pages:
+            return True, 'no_pages'
+        if len(sample.strip()) < 500:
             return True, 'too_short'
-        lang = _detect_lang(sample)
-        return (lang in allowed), lang
+        _DetectorFactory.seed = 0
+        langs = _detect_langs(sample)
+        if not langs:
+            return True, 'detection_failed'
+        top = langs[0]
+        if top.lang in allowed:
+            return True, top.lang
+        if top.prob >= 0.90 and not any(l.lang in allowed and l.prob >= 0.10 for l in langs):
+            return False, top.lang
+        return True, top.lang
     except LangDetectException:
         return True, 'detection_failed'
     except Exception:
