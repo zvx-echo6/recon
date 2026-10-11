@@ -302,13 +302,53 @@ class StatusDB:
         )
         conn.commit()
 
-    def increment_retry(self, file_hash):
+    def retry_target(self, file_hash):
+        """Stage a failed/queued document should resume at, or None if it cannot be retried.
+
+        'enriched'  - enrichment finished (concepts on disk); re-run embedding
+        'extracted' - extracted text with pages exists; re-run enrichment
+        None        - no extracted text on disk; the running service has no
+                      status-based re-extraction (the dispatcher only ingests
+                      files from watch folders), so it is left alone.
+        """
+        from .utils import get_config, resolve_text_dir
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT enriched_at, concepts_extracted FROM documents WHERE hash = ?",
+            (file_hash,)).fetchone()
+        if row is None:
+            return None
+        config = get_config()
+        text_dir = resolve_text_dir(file_hash, config, self)
+        try:
+            has_pages = os.path.isdir(text_dir) and any(
+                f.startswith('page_') and f.endswith('.txt') for f in os.listdir(text_dir))
+        except OSError:
+            has_pages = False
+        if not has_pages:
+            return None
+        if row['enriched_at'] and (row['concepts_extracted'] or 0) > 0:
+            cdir = os.path.join(config['paths']['concepts'], file_hash)
+            try:
+                if os.path.isdir(cdir) and os.listdir(cdir):
+                    return 'enriched'
+            except OSError:
+                pass
+        return 'extracted'
+
+    def increment_retry(self, file_hash, count_retry=True):
+        """Re-queue a document to the stage it failed at. Returns the new status, or None
+        if it cannot be retried (left untouched)."""
+        target = self.retry_target(file_hash)
+        if target is None:
+            return None
         conn = self._get_conn()
         conn.execute(
-            "UPDATE documents SET retry_count = retry_count + 1, status = 'queued', error_message = NULL WHERE hash = ?",
-            (file_hash,)
+            "UPDATE documents SET retry_count = retry_count + ?, status = ?, error_message = NULL WHERE hash = ?",
+            (1 if count_retry else 0, target, file_hash)
         )
         conn.commit()
+        return target
 
     def get_sources(self):
         conn = self._get_conn()

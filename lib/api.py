@@ -502,10 +502,13 @@ def api_retry_all():
     db = StatusDB()
     failures = db.get_failures()
     count = 0
+    skipped = 0
     for f in failures:
-        db.increment_retry(f['hash'])
-        count += 1
-    return jsonify({'ok': True, 'count': count})
+        if db.increment_retry(f['hash']):
+            count += 1
+        else:
+            skipped += 1
+    return jsonify({'ok': True, 'count': count, 'skipped_no_text': skipped})
 
 
 @app.route('/api/ingest-url', methods=['POST'])

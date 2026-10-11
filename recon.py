@@ -394,9 +394,11 @@ def cmd_failures(args):
     print(f"Total failures: {len(failures)}")
 
     if args.retry:
+        counts = {}
         for f in failures:
-            db.increment_retry(f['hash'])
-        print(f"Re-queued {len(failures)} documents")
+            t = db.increment_retry(f['hash']) or 'left-failed(no extracted text)'
+            counts[t] = counts.get(t, 0) + 1
+        print(f"Retry routing: {counts}")
 
     return 0
 
