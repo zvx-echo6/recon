@@ -36,6 +36,7 @@ import time
 import google.generativeai as genai
 from PyPDF2 import PdfReader
 
+from lib.dispatcher import claim_hash, stop_requested
 from lib.extractor import extract_text_from_page
 from lib.utils import content_hash, clean_filename_to_title, sanitize_filename
 
@@ -366,6 +367,13 @@ def pre_flight(content_path, meta_path, db, config):
         result['error'] = "Cannot hash PDF: {}".format(e)
         return result
 
+    if not claim_hash(file_hash):
+        # Another dispatch worker is processing identical content right now; leave the
+        # file in place - a later scan sees it as a duplicate once that job registers.
+        logger.info("Hash %s already in flight in another worker; deferring %s", file_hash[:8], filename)
+        result['action'] = 'in_flight'
+        return result
+
     # ── Step 2: Stale state cleanup ───────────────────────────────
 
     # ── Step 3: Hash dedupe ───────────────────────────────────────
@@ -522,6 +530,7 @@ def pre_flight(content_path, meta_path, db, config):
         return result
 
     # ── Step 12: Set up processing directory ──────────────────────
+    created_proc_dir = not os.path.exists(proc_dir)
     try:
         os.makedirs(proc_dir, exist_ok=True)
     except Exception as e:
@@ -530,6 +539,10 @@ def pre_flight(content_path, meta_path, db, config):
 
     pdf_proc_path = os.path.join(proc_dir, 'source.pdf')
     try:
+        # Record where the file came from BEFORE moving it, so an unclean stop mid-OCR
+        # can be undone at the next start (see recover_orphans).
+        with open(os.path.join(proc_dir, ORIGIN_MARKER), 'w', encoding='utf-8') as f:
+            json.dump({'content_path': content_path, 'meta_path': meta_path}, f)
         shutil.move(content_path, pdf_proc_path)
         if meta_path:
             shutil.move(meta_path, os.path.join(proc_dir, 'sidecar.meta.json'))
@@ -552,6 +565,16 @@ def pre_flight(content_path, meta_path, db, config):
     }
 
     for i in range(page_count):
+        if stop_requested():
+            # Service is stopping: put the file back where the dispatcher found it so the
+            # next start re-dispatches it from scratch.
+            logger.info("Shutdown requested at page %d/%d of %s; returning file to acquired",
+                        i + 1, page_count, filename)
+            if _restore_to_origin(proc_dir, content_path, meta_path, created_proc_dir):
+                result['action'] = 'aborted_shutdown'
+            else:
+                result['error'] = "Shutdown abort could not restore file; see recover_orphans"
+            return result
         try:
             if reader:
                 text, method = extract_text_from_page(
@@ -624,6 +647,10 @@ def pre_flight(content_path, meta_path, db, config):
         file_hash, filename, pdf_proc_path, size_bytes, source, category
     )
     db.queue_document(file_hash)
+    try:
+        os.remove(os.path.join(proc_dir, ORIGIN_MARKER))
+    except OSError:
+        pass
 
     # ── Step 16: Update documents row ─────────────────────────────
     conn = db._get_conn()
@@ -656,6 +683,67 @@ def pre_flight(content_path, meta_path, db, config):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+ORIGIN_MARKER = '.origin.json'
+
+
+def _restore_to_origin(proc_dir, content_path, meta_path, remove_dir):
+    """Move source.pdf (+ sidecar) from a processing dir back to its acquired path.
+    Returns True when the file is back in place. Never overwrites an existing file."""
+    src = os.path.join(proc_dir, 'source.pdf')
+    side = os.path.join(proc_dir, 'sidecar.meta.json')
+    try:
+        if os.path.exists(src):
+            if os.path.exists(content_path):
+                logger.error("Cannot restore %s: destination exists", content_path)
+                return False
+            os.makedirs(os.path.dirname(content_path), exist_ok=True)
+            shutil.move(src, content_path)
+        if meta_path and os.path.exists(side) and not os.path.exists(meta_path):
+            shutil.move(side, meta_path)
+        if remove_dir:
+            shutil.rmtree(proc_dir, ignore_errors=True)
+        else:
+            try:
+                os.remove(os.path.join(proc_dir, ORIGIN_MARKER))
+            except OSError:
+                pass
+        return True
+    except Exception as e:
+        logger.error("Restore to acquired failed for %s: %s", proc_dir, e)
+        return False
+
+
+def recover_orphans(db, config):
+    """At service start: undo PDF ingests interrupted mid-extraction (killed while OCRing).
+    A processing dir with an origin marker, no meta.json and no documents row never
+    finished; move its file back to acquired/ so it is dispatched again."""
+    processing_root = config.get('pipeline', {}).get('processing_root', '/opt/recon/data/processing')
+    if not os.path.isdir(processing_root):
+        return 0
+    conn = db._get_conn()
+    restored = 0
+    for name in os.listdir(processing_root):
+        proc_dir = os.path.join(processing_root, name)
+        marker = os.path.join(proc_dir, ORIGIN_MARKER)
+        if not os.path.isfile(marker):
+            continue
+        try:
+            with open(marker, encoding='utf-8') as f:
+                origin = json.load(f)
+        except Exception:
+            continue
+        known = conn.execute("SELECT 1 FROM documents WHERE hash = ?", (name,)).fetchone()
+        if known or os.path.exists(os.path.join(proc_dir, 'meta.json')):
+            try:
+                os.remove(marker)
+            except OSError:
+                pass
+            continue
+        if _restore_to_origin(proc_dir, origin['content_path'], origin.get('meta_path'), True):
+            restored += 1
+            logger.warning("Recovered interrupted PDF ingest %s -> %s", name[:8], origin['content_path'])
+    return restored
 
 
 def _move_to_rejected(content_path, meta_path, config, filename):

@@ -8,11 +8,22 @@ hands them to the appropriate processor's pre_flight().
 Phase 3: importable one-shot dispatcher. Service-loop integration in Phase 5.
 Phase 4: sidecar is optional (PDFs may arrive without .meta.json).
 Phase 6f-2: format normalizer converts non-standard formats to PDF before dispatch.
+
+Parallel dispatch: pre_flight runs on a bounded worker pool
+(pipeline.dispatch_workers, default 3) so one slow file (e.g. a scanned PDF going
+through vision OCR) no longer blocks intake. The scan loop never waits for running
+jobs: it submits only files whose path is not already in flight, and processors call
+claim_hash() right after hashing so two workers never process the same content hash
+concurrently (the loser leaves its file in place for a later scan, where the normal
+duplicate check removes it).
 """
+import collections
+import concurrent.futures
 import importlib
 import logging
 import os
 import subprocess
+import threading
 import time
 
 from .utils import get_config
@@ -152,21 +163,128 @@ def _is_stable(filepath, stability_seconds):
         return False
 
 
-def dispatch_once():
-    """One-shot dispatch: scan all configured acquired/ subfolders once.
+# ── Parallel worker pool ─────────────────────────────────────────────
 
-    Returns list of result dicts from processor pre_flight calls.
+DEFAULT_DISPATCH_WORKERS = 3
+
+_state_lock = threading.Lock()
+_inflight_paths = set()      # content paths submitted or running
+_inflight_hashes = set()     # content hashes currently claimed by a running job
+_running = 0                 # jobs currently inside pre_flight
+_cooldown = {}               # content path -> time its last attempt ended
+RETRY_COOLDOWN_S = 30        # a file left in place is not re-dispatched sooner than this
+_shared_db = None            # one StatusDB for all scans (connections are per-thread)
+_executor = None
+_executor_workers = 0
+_results = collections.deque()   # finished results not yet reported by dispatch_once
+_job_ctx = threading.local()     # per-worker: list of hashes claimed by the current job
+_stopping = threading.Event()    # set at shutdown: stop submitting, abort long jobs
+
+
+def stop_requested():
+    """True once shutdown began; long-running processors poll this between units of work."""
+    return _stopping.is_set()
+
+
+def claim_hash(file_hash):
+    """Claim a content hash for the current dispatch job.
+
+    Processors call this right after hashing. Returns False if another running job
+    already holds the hash (caller must return without touching any file). Outside a
+    dispatcher job (direct pre_flight calls, tests) it always returns True.
+    """
+    claimed = getattr(_job_ctx, 'hashes', None)
+    if claimed is None:
+        return True
+    with _state_lock:
+        if file_hash in _inflight_hashes:
+            return False
+        _inflight_hashes.add(file_hash)
+    claimed.append(file_hash)
+    return True
+
+
+def _get_executor(workers):
+    global _executor, _executor_workers
+    with _state_lock:
+        if _executor is None:
+            _executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix='dispatch')
+            _executor_workers = workers
+            logger.info("[dispatcher] Worker pool started: %d workers", workers)
+        return _executor
+
+
+def _run_job(processor, processor_name, subfolder_name, content_path, meta_path,
+             basename, db, config):
+    """Worker-thread body: run one pre_flight, always release in-flight bookkeeping."""
+    global _running
+    started = time.time()
+    with _state_lock:
+        _running += 1
+    _job_ctx.hashes = []
+    try:
+        if _stopping.is_set():
+            result = {'action': 'skipped_shutdown', 'basename': basename}
+        elif not os.path.exists(content_path):
+            result = {'action': 'vanished', 'basename': basename}
+        else:
+            logger.info("Dispatching %s/%s to %s", subfolder_name, basename, processor_name)
+            try:
+                result = processor.pre_flight(content_path, meta_path, db, config)
+            except Exception as e:
+                logger.error("Processor %s crashed on %s: %s", processor_name, basename, e,
+                             exc_info=True)
+                result = {'action': 'error', 'error': str(e), 'basename': basename}
+            logger.info("Result for %s: %s (%.1fs)", basename,
+                        result.get('action', 'unknown'), time.time() - started)
+    finally:
+        with _state_lock:
+            for h in _job_ctx.hashes:
+                _inflight_hashes.discard(h)
+            _inflight_paths.discard(content_path)
+            _cooldown[content_path] = time.time()
+            _running -= 1
+        _job_ctx.hashes = None
+    _results.append(result)
+    return result
+
+
+def _drain_results():
+    out = []
+    while True:
+        try:
+            out.append(_results.popleft())
+        except IndexError:
+            return out
+
+
+def dispatch_once(wait=False):
+    """Scan all configured acquired/ subfolders once and submit new files to the pool.
+
+    Never blocks on running jobs (unless wait=True, used by the CLI/tests, which waits
+    for the jobs submitted by this call). Returns the results of jobs that finished
+    since the previous call.
     """
     config = get_config()
     pipeline_cfg = config.get('pipeline', {})
     acquired_root = pipeline_cfg.get('acquired_root', '/opt/recon/data/acquired')
     dispatch_map = pipeline_cfg.get('dispatch', {})
     stability_seconds = pipeline_cfg.get('mtime_stability_seconds', 10)
+    workers = max(1, int(pipeline_cfg.get('dispatch_workers', DEFAULT_DISPATCH_WORKERS)))
+    max_pending = workers * 4    # bound on submitted-but-unfinished jobs
 
-    db = StatusDB(config['paths']['db'])
-    results = []
+    global _shared_db
+    if _shared_db is None or _shared_db.db_path != config['paths']['db']:
+        _shared_db = StatusDB(config['paths']['db'])
+    db = _shared_db
+    executor = _get_executor(workers)
+    futures = []
+    capped = False
 
     for subfolder_name, processor_name in dispatch_map.items():
+        if _stopping.is_set() or capped:
+            break
         subfolder_path = os.path.join(acquired_root, subfolder_name)
 
         processor = _load_processor(processor_name)
@@ -185,6 +303,8 @@ def dispatch_once():
             continue
 
         for content_path, meta_path, basename in pairs:
+            if _stopping.is_set():
+                break
             # Content file must be stable; sidecar too if present
             if not _is_stable(content_path, stability_seconds):
                 logger.debug("File %s not yet stable, skipping", basename)
@@ -193,28 +313,74 @@ def dispatch_once():
                 logger.debug("Sidecar for %s not yet stable, skipping", basename)
                 continue
 
-            logger.info("Dispatching %s/%s to %s", subfolder_name, basename, processor_name)
+            with _state_lock:
+                if content_path in _inflight_paths:
+                    continue
+                last = _cooldown.get(content_path)
+                if last is not None and time.time() - last < RETRY_COOLDOWN_S:
+                    continue
+                if len(_inflight_paths) >= max_pending:
+                    capped = True
+                    break
+                _inflight_paths.add(content_path)
             try:
-                result = processor.pre_flight(content_path, meta_path, db, config)
-                results.append(result)
-                logger.info("Result for %s: %s", basename, result.get('action', 'unknown'))
-            except Exception as e:
-                logger.error("Processor %s crashed on %s: %s", processor_name, basename, e)
-                results.append({
-                    'action': 'error',
-                    'error': str(e),
-                    'basename': basename,
-                })
+                futures.append(executor.submit(
+                    _run_job, processor, processor_name, subfolder_name,
+                    content_path, meta_path, basename, db, config))
+            except RuntimeError:     # executor shut down underneath us
+                with _state_lock:
+                    _inflight_paths.discard(content_path)
+                break
 
-    return results
+    if futures:
+        with _state_lock:
+            logger.info("[dispatcher] Submitted %d job(s); in flight: %d (running %d, workers %d)",
+                        len(futures), len(_inflight_paths), _running, workers)
+    if wait and futures:
+        concurrent.futures.wait(futures)
+    return _drain_results()
+
+
+def shutdown_workers(timeout=40):
+    """Stop submitting, cancel queued jobs, and wait up to `timeout` s for running jobs
+    (which poll stop_requested() and put their files back). Returns jobs still running."""
+    _stopping.set()
+    with _state_lock:
+        ex = _executor
+    if ex is not None:
+        ex.shutdown(wait=False, cancel_futures=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with _state_lock:
+            if _running == 0:
+                return 0
+        time.sleep(0.25)
+    with _state_lock:
+        return _running
+
+
+def _recover_orphans(config, db):
+    """Let each processor put back files left half-moved by an unclean stop."""
+    for processor_name in config.get('pipeline', {}).get('dispatch', {}).values():
+        processor = _load_processor(processor_name)
+        fn = getattr(processor, 'recover_orphans', None) if processor else None
+        if fn:
+            try:
+                fn(db, config)
+            except Exception as e:
+                logger.error("[dispatcher] recover_orphans failed for %s: %s", processor_name, e,
+                             exc_info=True)
 
 
 def dispatch_loop(stop_event, db, config, interval=30):
     """Run dispatch_once() on a loop until stop_event is set.
 
-    Designed to run as a service thread. Never raises to the caller.
+    Designed to run as a service thread. Never raises to the caller. Scans are
+    non-blocking: pre_flight work happens on the worker pool.
     """
     logger.info("[dispatcher] Loop started (interval: %ds)", interval)
+    _stopping.clear()
+    _recover_orphans(config, db)
 
     while not stop_event.is_set():
         try:
@@ -224,14 +390,23 @@ def dispatch_loop(stop_event, db, config, interval=30):
                 for r in results:
                     a = r.get('action', 'unknown')
                     actions[a] = actions.get(a, 0) + 1
-                logger.info("[dispatcher] Dispatched %d items: %s",
+                logger.info("[dispatcher] Finished %d items: %s",
                             len(results),
                             ", ".join(f"{k}={v}" for k, v in sorted(actions.items())))
             else:
-                logger.debug("[dispatcher] No items to dispatch")
+                logger.debug("[dispatcher] No items finished")
         except Exception as e:
             logger.error("[dispatcher] Error in dispatch_once: %s", e, exc_info=True)
 
-        stop_event.wait(interval)
+        # While jobs are in flight rescan every second so finished workers are refilled
+        # promptly; per-file cooldown stops a failing file being retried at that rate.
+        with _state_lock:
+            if len(_cooldown) > 5000:
+                cutoff = time.time() - 3600
+                for p in [p for p, t in _cooldown.items() if t < cutoff]:
+                    del _cooldown[p]
+            busy = bool(_inflight_paths)
+        stop_event.wait(min(interval, 1.0) if busy else interval)
 
+    _stopping.set()
     logger.info("[dispatcher] Loop stopped")

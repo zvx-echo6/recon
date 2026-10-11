@@ -21,6 +21,7 @@ import re
 import shutil
 
 from lib.web_scraper import chunk_text
+from lib.dispatcher import claim_hash
 from lib.utils import content_hash, clean_filename_to_title
 from lib.processors.pdf_processor import _extract_gemini_metadata
 
@@ -163,6 +164,13 @@ def pre_flight(content_path, meta_path, db, config):
         result['hash'] = file_hash
     except Exception as e:
         result['error'] = "Cannot hash text file: {}".format(e)
+        return result
+
+    if not claim_hash(file_hash):
+        # Another dispatch worker is processing identical content right now; leave the
+        # file in place - a later scan sees it as a duplicate once that job registers.
+        logger.info("Hash %s already in flight in another worker; deferring %s", file_hash[:8], filename)
+        result['action'] = 'in_flight'
         return result
 
     # ── Step 2: Stale state cleanup ───────────────────────────────

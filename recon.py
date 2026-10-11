@@ -733,6 +733,15 @@ def cmd_service(args):
     except KeyboardInterrupt:
         stop_event.set()
 
+    # Dispatcher workers: stop submitting, let running jobs finish or hand their files back
+    try:
+        from lib.dispatcher import shutdown_workers
+        left = shutdown_workers(timeout=40)
+        if left:
+            logger.warning("Dispatcher: %d job(s) still running at shutdown", left)
+    except Exception as e:
+        logger.error("Dispatcher shutdown error: %s", e)
+
     # Give threads a moment to finish current batch
     logger.info("Waiting for threads to finish...")
     time.sleep(5)

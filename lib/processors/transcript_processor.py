@@ -15,6 +15,7 @@ import os
 import shutil
 
 from lib.web_scraper import chunk_text
+from lib.dispatcher import claim_hash
 from lib.utils import content_hash
 
 logger = logging.getLogger("recon.processors.transcript")
@@ -49,6 +50,13 @@ def pre_flight(content_path, meta_path, db, config):
         result['hash'] = file_hash
     except Exception as e:
         result['error'] = f"Cannot hash content file: {e}"
+        return result
+
+    if not claim_hash(file_hash):
+        # Another dispatch worker is processing identical content right now; leave the
+        # file in place - a later scan sees it as a duplicate once that job registers.
+        logger.info("Hash %s already in flight in another worker; deferring %s", file_hash[:8], os.path.basename(content_path))
+        result['action'] = 'in_flight'
         return result
 
     # Stale state cleanup — remove any pre-existing processing/concepts dirs

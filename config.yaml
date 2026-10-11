@@ -452,6 +452,8 @@ pipeline:
     text: text_processor
   # mtime stability threshold for picking up files from acquired/
   mtime_stability_seconds: 10
+  # Parallel pre_flight workers in the dispatcher (extraction/OCR no longer blocks intake)
+  dispatch_workers: 3
   # Language filter: skip non-English content before Gemini enrichment
   language_filter: true           # Enable langdetect-based filtering
   allowed_languages:              # ISO 639-1 codes allowed through enrichment
