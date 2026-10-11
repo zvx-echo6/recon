@@ -685,7 +685,7 @@ def cmd_service(args):
                          args=('enrich', lambda: run_enrichment(workers=enrich_workers))),
         threading.Thread(target=stage_loop, daemon=True, name='embed',
                          args=('embed', lambda: run_embedding(workers=embed_workers))),
-        threading.Thread(target=lambda: queued_extraction_loop(stop_event, db=StatusDB(), interval=stage_poll_interval),
+        threading.Thread(target=lambda: queued_extraction_loop(stop_event, db=StatusDB(), interval=poll_interval),
                          daemon=True, name='reextract'),
         threading.Thread(target=lambda: filing_worker_loop(stop_event, db, config, interval=filing_interval),
                          daemon=True, name='filing'),
