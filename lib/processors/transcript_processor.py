@@ -16,9 +16,9 @@ import shutil
 
 from lib.web_scraper import chunk_text
 from lib.dispatcher import claim_hash
-from lib.utils import content_hash
+from lib.utils import content_hash, setup_logging
 
-logger = logging.getLogger("recon.processors.transcript")
+logger = setup_logging("recon.processors.transcript")
 
 # Words per page for transcript chunking (matches existing pipeline)
 WORDS_PER_PAGE = 2000

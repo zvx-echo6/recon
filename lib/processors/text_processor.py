@@ -22,10 +22,10 @@ import shutil
 
 from lib.web_scraper import chunk_text
 from lib.dispatcher import claim_hash
-from lib.utils import content_hash, clean_filename_to_title
+from lib.utils import content_hash, clean_filename_to_title, setup_logging
 from lib.processors.pdf_processor import _extract_gemini_metadata
 
-logger = logging.getLogger("recon.processors.text")
+logger = setup_logging("recon.processors.text")
 
 WORDS_PER_PAGE = 2000
 

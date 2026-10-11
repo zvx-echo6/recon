@@ -38,9 +38,9 @@ from PyPDF2 import PdfReader
 
 from lib.dispatcher import claim_hash, stop_requested
 from lib.extractor import extract_text_from_page
-from lib.utils import content_hash, clean_filename_to_title, sanitize_filename
+from lib.utils import content_hash, clean_filename_to_title, sanitize_filename, setup_logging
 
-logger = logging.getLogger("recon.processors.pdf")
+logger = setup_logging("recon.processors.pdf")
 
 # Maximum retries for transient (API) failures
 MAX_TRANSIENT_RETRIES = 3

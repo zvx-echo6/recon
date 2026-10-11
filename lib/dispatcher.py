@@ -26,10 +26,10 @@ import subprocess
 import threading
 import time
 
-from .utils import get_config
+from .utils import get_config, setup_logging
 from .status import StatusDB
 
-logger = logging.getLogger("recon.dispatcher")
+logger = setup_logging("recon.dispatcher")
 
 # Content file extensions recognized by the dispatcher
 CONTENT_EXTENSIONS = {'.txt', '.vtt', '.html', '.pdf'}
