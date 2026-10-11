@@ -706,6 +706,14 @@ def cmd_service(args):
                              daemon=True, name='scraper')
         )
 
+    # ZIM update scheduler: per-ZIM schedules + daily catalog check (re-reads the DB each tick)
+    from lib.kiwix_cfg import kcfg
+    if kcfg().get('scheduler', True):
+        from lib.zim_updater import scheduler_loop
+        threads.append(
+            threading.Thread(target=lambda: scheduler_loop(stop_event), daemon=True, name='zim-updates')
+        )
+
     logger.info("=== RECON Service Starting ===")
     logger.info(f"  Dashboard: {web_host}:{web_port}")
     logger.info(f"  Workers: enrich={enrich_workers}, embed={embed_workers}")
@@ -714,6 +722,8 @@ def cmd_service(args):
     logger.info(f"  PeerTube acquisition: every {pt_interval}s")
     if scraper_cfg.get('workspace'):
         logger.info(f"  Scraper: every {scraper_cfg.get('poll_interval', 300)}s")
+    if kcfg().get('scheduler', True):
+        logger.info("  ZIM updates: scheduler every 60s")
     logger.info(f"  Progress: every {progress_interval}s")
 
     for t in threads:

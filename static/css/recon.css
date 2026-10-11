@@ -332,3 +332,49 @@ tr:hover { background: var(--bg-secondary); }
 .badge-processing { background: #4a3a1a; color: #f59e0b; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
 .badge-extracting { background: #1a3a5a; color: #0ea5e9; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
 .badge-failed { background: #4a1a1a; color: #ff4444; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+
+/* ── Form inputs (same look as the scraper form) ── */
+.form-input {
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 13px;
+}
+.form-input:focus { outline: none; border-color: var(--green); }
+.form-label { display: block; margin-bottom: 4px; color: var(--text-muted); font-size: 12px; }
+
+/* ── Kiwix updates: run result badges + calendar ── */
+.badge-updated { background: #1a4a2e; color: #00ff41; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-current { background: #1a3a5a; color: #0ea5e9; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-skipped { background: #4a3a1a; color: #f59e0b; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-running { background: #2d1f5e; color: #a78bfa; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; }
+.badge-scheduled { background: transparent; color: var(--text-muted); padding: 1px 7px; border: 1px solid var(--border-light); border-radius: var(--radius); font-size: 11px; }
+.btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn-sm { padding: 3px 9px; font-size: 11px; }
+.log-box { background: var(--bg-primary); border: 1px solid var(--border); padding: 10px 12px; font-size: 11px; color: var(--text-muted); white-space: pre-wrap; max-height: 260px; overflow: auto; }
+
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); }
+.cal-dow { background: var(--bg-secondary); color: var(--green); padding: 6px 8px; font-size: 11px; text-transform: uppercase; }
+.cal-day { background: var(--bg-primary); min-height: 96px; padding: 4px 6px; cursor: pointer; min-width: 0; }
+.cal-day:hover { background: var(--bg-secondary); }
+.cal-day.other { opacity: 0.35; }
+.cal-day.today .cal-num { color: var(--green); font-weight: 700; }
+.cal-day.sel { outline: 1px solid var(--green); outline-offset: -1px; }
+.cal-num { font-size: 11px; color: var(--text-dim); }
+.cal-ev { display: block; font-size: 10px; padding: 1px 4px; margin-top: 2px; border-left: 3px solid var(--border-light); background: var(--bg-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-primary); }
+.cal-ev.updated { border-left-color: var(--green-dim); }
+.cal-ev.current { border-left-color: var(--blue-sky); }
+.cal-ev.skipped { border-left-color: var(--orange); }
+.cal-ev.failed { border-left-color: var(--red-dim); }
+.cal-ev.running { border-left-color: var(--purple); }
+.cal-ev.scheduled { border-left-color: var(--text-dim); border-left-style: dashed; color: var(--text-muted); }
+.cal-more { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.link { color: var(--blue-sky); text-decoration: none; cursor: pointer; }
+.link:hover { text-decoration: underline; }
+.nowrap { white-space: nowrap; }
+
+/* Status badges never wrap */
+[class^="badge-"], [class*=" badge-"] { white-space: nowrap; }

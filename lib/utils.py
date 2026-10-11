@@ -24,7 +24,7 @@ def get_config():
     if _config is not None:
         return _config
 
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yaml')
+    config_path = os.environ.get('RECON_CONFIG') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yaml')
     with open(config_path) as f:
         _config = yaml.safe_load(f)
 
