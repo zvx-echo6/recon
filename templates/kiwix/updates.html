@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="kiwix-updates">
+    <!-- Stats row -->
+    <div class="stat-grid" style="grid-template-columns:repeat(4, 1fr);">
+        <div class="stat-card"><div class="label">ZIMs</div><div class="value" id="ku-total">&mdash;</div></div>
+        <div class="stat-card"><div class="label">Updates Available</div><div class="value" id="ku-avail">&mdash;</div></div>
+        <div class="stat-card"><div class="label">Auto-update On</div><div class="value" id="ku-auto">&mdash;</div></div>
+        <div class="stat-card"><div class="label">Last Check</div><div class="value" id="ku-checked" style="font-size:16px;">&mdash;</div></div>
+    </div>
+
+    <div class="flex-between mb-16">
+        <div class="btn-row">
+            <button class="btn active" id="ku-tab-list" data-act="view" data-view="list">Updates</button>
+            <button class="btn" id="ku-tab-cal" data-act="view" data-view="cal">Calendar</button>
+        </div>
+        <div class="btn-row">
+            <span class="text-small text-muted" id="ku-feedback" style="align-self:center;"></span>
+            <button class="btn" id="ku-check-all" data-act="check-all">Check for updates</button>
+        </div>
+    </div>
+
+    <!-- Updates table -->
+    <div id="ku-view-list">
+        <div class="panel">
+            <h3 class="section-title" style="margin-bottom:12px;">ZIM Updates</h3>
+            <table class="data-table" id="ku-table">
+                <thead>
+                    <tr><th>Title</th><th>Current</th><th>Latest</th><th>Download</th><th>Status</th><th>Auto-update</th><th>Schedule</th><th>Last Run</th><th></th></tr>
+                </thead>
+                <tbody id="ku-body">
+                    <tr><td colspan="9" class="text-muted">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Schedule editor -->
+        <div class="panel" id="ku-sched" style="display:none;">
+            <h3 class="section-title" style="margin-bottom:12px;">Schedule: <span id="ks-title"></span></h3>
+            <div style="display:grid;grid-template-columns:repeat(5, 1fr) auto;gap:12px;align-items:end;">
+                <div>
+                    <label class="form-label">Frequency</label>
+                    <select id="ks-freq" class="form-input" style="width:100%;">
+                        <option value="weekly">Weekly</option>
+                        <option value="monthly">Monthly</option>
+                    </select>
+                </div>
+                <div id="ks-wd-wrap">
+                    <label class="form-label">Day of week</label>
+                    <select id="ks-wd" class="form-input" style="width:100%;">
+                        <option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option>
+                        <option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option>
+                        <option value="6">Sunday</option>
+                    </select>
+                </div>
+                <div id="ks-md-wrap" style="display:none;">
+                    <label class="form-label">Day of month</label>
+                    <input type="number" id="ks-md" class="form-input" min="1" max="31" value="1" style="width:100%;">
+                </div>
+                <div id="ks-n-wrap" style="display:none;">
+                    <label class="form-label">Every N months</label>
+                    <input type="number" id="ks-n" class="form-input" min="1" max="24" value="1" style="width:100%;">
+                </div>
+                <div>
+                    <label class="form-label">Time (<span id="ks-tz"></span>)</label>
+                    <input type="time" id="ks-time" class="form-input" value="02:00" style="width:100%;">
+                </div>
+                <div>
+                    <label class="form-label">Enabled</label>
+                    <label class="toggle-switch"><input type="checkbox" id="ks-enabled"><span class="toggle-slider"></span></label>
+                </div>
+                <div class="btn-row">
+                    <button class="btn" data-act="sched-save">Save</button>
+                    <button class="btn" data-act="sched-cancel">Cancel</button>
+                </div>
+            </div>
+            <div class="text-small text-muted" id="ks-feedback" style="margin-top:8px;"></div>
+        </div>
+    </div>
+
+    <!-- Calendar -->
+    <div id="ku-view-cal" style="display:none;">
+        <div class="panel">
+            <div class="flex-between" style="margin-bottom:12px;">
+                <h3 class="section-title" style="margin:0;" id="kc-title">&mdash;</h3>
+                <div class="btn-row">
+                    <button class="btn" data-act="cal-prev">&lt; Prev</button>
+                    <button class="btn" data-act="cal-today">Today</button>
+                    <button class="btn" data-act="cal-next">Next &gt;</button>
+                </div>
+            </div>
+            <div class="cal-grid" id="kc-grid"></div>
+            <div class="pipeline-legend" style="margin-top:10px;">
+                <span><span class="legend-dot" style="background:var(--green-dim);"></span>Updated</span>
+                <span><span class="legend-dot" style="background:var(--blue-sky);"></span>Already current</span>
+                <span><span class="legend-dot" style="background:var(--orange);"></span>Skipped</span>
+                <span><span class="legend-dot" style="background:var(--red-dim);"></span>Failed</span>
+                <span><span class="legend-dot" style="background:var(--purple);"></span>Running</span>
+                <span><span class="legend-dot" style="background:var(--text-dim);"></span>Scheduled</span>
+            </div>
+        </div>
+        <div class="panel" id="kc-day" style="display:none;">
+            <h3 class="section-title" style="margin-bottom:12px;" id="kc-day-title"></h3>
+            <table class="data-table">
+                <thead><tr><th>Time</th><th>ZIM</th><th>Action</th><th>Trigger</th><th>Result</th><th></th></tr></thead>
+                <tbody id="kc-day-body"></tbody>
+            </table>
+        </div>
+        <div class="panel" id="kc-run" style="display:none;"></div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/kiwix-updates.js"></script>
+{% endblock %}
