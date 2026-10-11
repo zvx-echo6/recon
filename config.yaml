@@ -40,7 +40,7 @@ vector_db:
   collection: recon_knowledge_hybrid # Collection name
 
 gemini:
-  model: gemini-2.5-flash-lite     # Gemini model for enrichment
+  model: gemini-3.1-flash-lite     # Gemini model for enrichment
   response_mime_type: application/json  # Force JSON output from Gemini
 
 web:
@@ -422,6 +422,10 @@ scraper:
   docker_workers: 2                       # Concurrent crawl workers inside Zimit container
 
 # Stream B: New Library Pipeline
+# Filing worker (lib/filing.py): files completed processing/ items into the library
+filing:
+  max_per_cycle: 20     # documents filed per 30 s cycle (0 = pause the worker)
+
 new_pipeline:
   # Disabled 2026-04-14 for refactor — see refactored-recon repo for context
   enabled: false

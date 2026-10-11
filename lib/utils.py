@@ -385,6 +385,9 @@ def generate_download_url(filepath, library_root='/mnt/library', base_url='https
 
     # File content -- convert to files.echo6.co URL
     rel = os.path.relpath(filepath, library_root)
+    if rel.startswith('..'):
+        # Outside the published library (e.g. data/processing/<hash>/source.pdf): no public URL
+        return ''
     parts = rel.split(os.sep)
     encoded = '/'.join(quote(p) for p in parts)
     return f"{base_url}/{encoded}"

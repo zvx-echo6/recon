@@ -278,10 +278,11 @@ def move_file(source, target, doc_hash, db, orig_filename, collision_step=1, not
         return False
 
 
-def update_qdrant_payload(doc_hash, new_path, new_filename, original_filename, config):
+def update_qdrant_payload(doc_hash, new_path, new_filename, original_filename, config, url_only=False):
     """Update Qdrant payloads for all points matching doc_hash.
 
-    Sets download_url, filename, and original_filename.
+    Sets download_url, filename, and original_filename (only download_url if
+    url_only). Uses a filter so every point is updated regardless of count.
     Returns count of points updated, 0 if Qdrant unreachable.
     """
     try:
@@ -298,37 +299,33 @@ def update_qdrant_payload(doc_hash, new_path, new_filename, original_filename, c
         qdrant = QdrantClient(
             host=config['vector_db']['host'],
             port=config['vector_db']['port'],
-            timeout=60,
+            timeout=300,
         )
         collection = config['vector_db']['collection']
 
-        hits = qdrant.scroll(
-            collection_name=collection,
-            scroll_filter=Filter(must=[
-                FieldCondition(key="doc_hash", match=MatchValue(value=doc_hash))
-            ]),
-            limit=2000,
-            with_payload=False,
-        )
-        point_ids = [p.id for p in hits[0]]
+        doc_filter = Filter(must=[
+            FieldCondition(key="doc_hash", match=MatchValue(value=doc_hash))
+        ])
+        n_points = qdrant.count(
+            collection_name=collection, count_filter=doc_filter, exact=True
+        ).count
 
-        if not point_ids:
+        if not n_points:
             return 0
 
-        payload = {
-            "download_url": new_url,
-            "filename": new_filename,
-            "original_filename": original_filename,
-        }
+        payload = {"download_url": new_url}
+        if not url_only:
+            payload["filename"] = new_filename
+            payload["original_filename"] = original_filename
 
         qdrant.set_payload(
             collection_name=collection,
             payload=payload,
-            points=point_ids,
+            points=doc_filter,
         )
 
-        logger.debug("Updated %d Qdrant points for %s", len(point_ids), doc_hash[:8])
-        return len(point_ids)
+        logger.debug("Updated %d Qdrant points for %s", n_points, doc_hash[:8])
+        return n_points
 
     except Exception as e:
         logger.warning("Qdrant update failed for %s: %s", doc_hash[:8], e)

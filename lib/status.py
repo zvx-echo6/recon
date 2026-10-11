@@ -104,6 +104,12 @@ class StatusDB:
             conn.execute("ALTER TABLE documents ADD COLUMN organized_at TEXT")
         except Exception:
             pass  # column already exists
+        # Migration: add filing_error / filing_failed_at columns to documents if missing
+        for col in ('filing_error', 'filing_failed_at'):
+            try:
+                conn.execute(f"ALTER TABLE documents ADD COLUMN {col} TEXT")
+            except Exception:
+                pass  # column already exists
 
         # Migration: add subprocess_pid column to scrape_jobs if missing
         try:
@@ -434,6 +440,24 @@ class StatusDB:
         conn = self._get_conn()
         conn.execute(
             "UPDATE documents SET organized_at = CURRENT_TIMESTAMP WHERE hash = ?",
+            (file_hash,)
+        )
+        conn.commit()
+
+    def mark_filing_failed(self, file_hash, reason):
+        """Record a persistent filing failure; the filing worker skips these."""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE documents SET filing_error = ?, filing_failed_at = CURRENT_TIMESTAMP WHERE hash = ?",
+            (reason, file_hash)
+        )
+        conn.commit()
+
+    def clear_filing_failed(self, file_hash):
+        """Clear a filing failure so the worker retries the document."""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE documents SET filing_error = NULL, filing_failed_at = NULL WHERE hash = ?",
             (file_hash,)
         )
         conn.commit()

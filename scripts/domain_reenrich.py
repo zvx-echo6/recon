@@ -98,7 +98,7 @@ def classify_concept(title, subdomains, content, key):
     )
     genai.configure(api_key=key)
     model = genai.GenerativeModel(
-        "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-lite",
         generation_config={"response_mime_type": "application/json"}
     )
     for attempt in range(4):
