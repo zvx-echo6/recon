@@ -953,6 +953,12 @@ def cmd_pipeline(args):
         return 0
 
     elif args.pipeline_action == 'watch':
+        if not config.get('new_pipeline', {}).get('enabled', False):
+            msg = ("WARNING: legacy Stream B pipeline is disabled (new_pipeline.enabled=false); "
+                   "'pipeline watch' will idle and do nothing. Live ingest is the dispatcher in "
+                   "`recon.py service`.")
+            print(msg)
+            logger.warning(msg)
         print("Starting pipeline watchdog (Ctrl+C to stop)...")
         run_watchdog(config)
         return 0

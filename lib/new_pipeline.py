@@ -1,6 +1,15 @@
 """
 RECON Stream B — New Library Pipeline
 
+*** LEGACY / DISABLED (config.yaml new_pipeline.enabled: false since 2026-04-14). ***
+The watch loop (run_watchdog, `recon.py pipeline watch`, recon-watchdog.service) is idle and the
+service unit is stopped/disabled. Live ingest is lib/dispatcher.py + lib/processors/; live filing
+is lib/filing.py. This module is kept because the live service still imports from it:
+  - lib/filing.py uses update_qdrant_payload()
+  - lib/organizer.py's determine_dominant_domain is used by both (it lives in organizer, not here)
+  - recon.py `pipeline status|migrate|reverse|sweep` CLI subcommands use the helpers below.
+Do not delete without moving update_qdrant_payload first.
+
 Handles file acquisition, standardized naming (from enriched book_title),
 collision resolution, and library placement for new and existing documents.
 
@@ -890,6 +899,9 @@ def run_watchdog(config):
     poll_interval = config.get('new_pipeline', {}).get('poll_interval', 60)
     db = StatusDB()
 
+    if not config.get('new_pipeline', {}).get('enabled', False):
+        logger.warning("Legacy Stream B pipeline is DISABLED (new_pipeline.enabled=false): "
+                       "the watchdog will idle and do nothing. Live ingest is the dispatcher.")
     logger.info("Pipeline watchdog started (poll=%ds)", poll_interval)
 
     while not _shutdown:
