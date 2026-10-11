@@ -745,6 +745,16 @@ class StatusDB:
         )
         conn.commit()
 
+    def get_filing_failures(self):
+        """Documents the filing worker could not file (documents.filing_error set). Their
+        source files stay in place (data/processing/<hash>); this only lists them."""
+        conn = self._get_conn()
+        return [dict(r) for r in conn.execute(
+            "SELECT hash, filename, book_title, status, path, discovered_at, embedded_at, "
+            "filing_error, filing_failed_at FROM documents WHERE filing_error IS NOT NULL "
+            "ORDER BY filing_failed_at DESC, hash"
+        ).fetchall()]
+
     def clear_filing_failed(self, file_hash):
         """Clear a filing failure so the worker retries the document."""
         conn = self._get_conn()

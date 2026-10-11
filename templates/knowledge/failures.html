@@ -25,9 +25,35 @@
     {% endfor %}
 </table>
 {% endif %}
+
+<h3 style="color:#ffa500;margin:28px 0 8px;">Unfiled Documents ({{ filing_failures|length }})</h3>
+<p class="text-dim text-xs" style="margin-bottom:12px;">Finished the pipeline but could not be filed into the library. Files stay in data/processing/&lt;hash&gt;. Retry clears the error so the filing worker tries again. JSON: /api/unclassified</p>
+{% if not filing_failures %}
+<p class="text-dim">None.</p>
+{% else %}
+<table>
+    <tr><th>Title</th><th>Hash</th><th>Filing error</th><th>Failed at</th><th>Actions</th></tr>
+    {% for f in filing_failures %}
+    <tr>
+        <td>{{ f.book_title or f.filename or '?' }}</td>
+        <td class="text-dim text-xs">{{ f.hash[:12] }}</td>
+        <td style="color:#ffa500;font-size:11px;">{{ (f.filing_error or '')[:100] }}</td>
+        <td class="text-dim text-xs">{{ f.filing_failed_at or '' }}</td>
+        <td><button class="btn" onclick="retryFiling('{{ f.hash }}', this)">Retry</button></td>
+    </tr>
+    {% endfor %}
+</table>
+{% endif %}
 {% endblock %}
 {% block scripts %}
 <script>
+async function retryFiling(hash, btn) {
+    btn.disabled = true;
+    try {
+        var resp = await fetch('/api/unclassified/' + hash + '/retry', {method: 'POST'});
+        if (resp.ok) { btn.textContent = 'Queued'; } else { btn.textContent = 'Failed'; }
+    } catch(e) { btn.textContent = 'Error'; }
+}
 async function retryAll() {
     var btn = document.getElementById('retry-all-btn');
     var status = document.getElementById('retry-all-status');

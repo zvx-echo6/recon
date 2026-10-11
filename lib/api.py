@@ -310,9 +310,52 @@ def web_ingest_page():
 def failures_page():
     db = StatusDB()
     failures = db.get_failures()
+    filing_failures = db.get_filing_failures()
     return render_template('knowledge/failures.html',
                            domain='knowledge', subnav=KNOWLEDGE_SUBNAV, active_page='/failures',
-                           failures=failures)
+                           failures=failures, filing_failures=filing_failures)
+
+
+def _filing_category(err):
+    return (err or 'unknown').split(':')[0].strip()[:60]
+
+
+@app.route('/api/unclassified')
+def api_unclassified():
+    """Documents that finished the pipeline but could not be filed into the library
+    (filing_error set). Source files are untouched in data/processing/<hash>."""
+    db = StatusDB()
+    items = db.get_filing_failures()
+    counts = {}
+    for it in items:
+        c = _filing_category(it['filing_error'])
+        counts[c] = counts.get(c, 0) + 1
+    return jsonify({'total': len(items), 'counts': counts, 'items': items})
+
+
+@app.route('/api/unclassified/<file_hash>/retry', methods=['POST'])
+def api_unclassified_retry(file_hash):
+    """Clear the filing error so the filing worker tries the document again."""
+    db = StatusDB()
+    doc = db.get_document(file_hash)
+    if not doc or not doc.get('filing_error'):
+        return jsonify({'ok': False, 'error': 'no filing error recorded for this hash'}), 404
+    db.clear_filing_failed(file_hash)
+    return jsonify({'ok': True, 'hash': file_hash})
+
+
+@app.route('/api/unclassified/retry-all', methods=['POST'])
+def api_unclassified_retry_all():
+    """Clear filing errors (optionally only ?category=<text before the first colon>)."""
+    db = StatusDB()
+    category = request.args.get('category')
+    n = 0
+    for it in db.get_filing_failures():
+        if category and _filing_category(it['filing_error']) != category:
+            continue
+        db.clear_filing_failed(it['hash'])
+        n += 1
+    return jsonify({'ok': True, 'count': n})
 
 
 @app.route('/peertube')
