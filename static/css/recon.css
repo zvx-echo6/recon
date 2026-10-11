@@ -375,3 +375,6 @@ tr:hover { background: var(--bg-secondary); }
 .link { color: var(--blue-sky); text-decoration: none; cursor: pointer; }
 .link:hover { text-decoration: underline; }
 .nowrap { white-space: nowrap; }
+
+/* Status badges never wrap */
+[class^="badge-"], [class*=" badge-"] { white-space: nowrap; }

@@ -21,6 +21,16 @@
         } catch (e) { return iso; }
     }
 
+    function setTime(t) {
+        var p = String(t || 02:00).split(:);
+        document.getElementById(ks-time-h).value = (0 + (parseInt(p[0], 10) || 0)).slice(-2);
+        document.getElementById(ks-time-m).value = (0 + (parseInt(p[1], 10) || 0)).slice(-2);
+    }
+
+    function getTime() {
+        return document.getElementById(ks-time-h).value + : + document.getElementById(ks-time-m).value;
+    }
+
     function feedback(msg, isErr) {
         var el = document.getElementById('ku-feedback');
         el.style.color = isErr ? '#ff4444' : '#00ff41';
@@ -172,7 +182,7 @@
         document.getElementById('ks-wd').value = String(s.weekday === null || s.weekday === undefined ? 6 : s.weekday);
         document.getElementById('ks-md').value = s.monthday || 1;
         document.getElementById('ks-n').value = s.interval_n || 1;
-        document.getElementById('ks-time').value = s.run_time || '02:00';
+        setTime(s.run_time || '02:00');
         document.getElementById('ks-enabled').checked = enable ? true : !!s.enabled;
         document.getElementById('ks-feedback').textContent = '';
         syncFreq();
@@ -201,7 +211,7 @@
             weekday: parseInt(document.getElementById('ks-wd').value, 10),
             monthday: parseInt(document.getElementById('ks-md').value, 10),
             interval_n: parseInt(document.getElementById('ks-n').value, 10),
-            run_time: document.getElementById('ks-time').value
+            run_time: getTime()
         };
         putSchedule(state.editKey, body).then(function(d) {
             var fb = document.getElementById('ks-feedback');
