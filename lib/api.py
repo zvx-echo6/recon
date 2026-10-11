@@ -61,6 +61,8 @@ app.request_class = _LargeZimRequest
 # ── Netsyms Blueprint ──
 from .netsyms_api import netsyms_bp
 app.register_blueprint(netsyms_bp)
+from .kiwix_updates_api import kiwix_updates_bp
+app.register_blueprint(kiwix_updates_bp)
 
 
 # ── Navigation Constants ──
@@ -81,6 +83,7 @@ PEERTUBE_SUBNAV = [
 
 KIWIX_SUBNAV = [
     {'href': '/kiwix', 'label': 'Library'},
+    {'href': '/kiwix/updates', 'label': 'Updates'},
     {'href': '/kiwix/scraper', 'label': 'Scraper'},
 ]
 SETTINGS_SUBNAV = [
@@ -2027,6 +2030,12 @@ def kiwix_dashboard():
                            domain='kiwix', subnav=KIWIX_SUBNAV, active_page='/kiwix')
 
 
+@app.route('/kiwix/updates')
+def kiwix_updates():
+    return render_template('kiwix/updates.html',
+                           domain='kiwix', subnav=KIWIX_SUBNAV, active_page='/kiwix/updates')
+
+
 @app.route('/kiwix/scraper')
 def kiwix_scraper():
     return render_template('kiwix/scraper.html',
@@ -2179,9 +2188,12 @@ def _kiwix_remove_book(zim_filename, zim_uuid=None, library_xml=None):
     return True
 
 
-def _full_zim_cleanup(source_id):
+def _full_zim_cleanup(source_id, remove_file=True, remove_library=True, remove_scrape_jobs=True):
     """Full ZIM cleanup: Qdrant vectors, DB records, kiwix-manage, SIGHUP, file delete.
-    Returns dict with results. Caller handles cache refresh."""
+    The ZIM update flow calls it with remove_file/remove_library/remove_scrape_jobs=False to
+    pull only the search index (vectors + DB rows) of a version that was already swapped out.
+    Returns dict with results, or {'blocked': reason} when nothing was changed.
+    Caller handles cache refresh."""
     import subprocess
     import signal
     import requests as req
@@ -2197,6 +2209,18 @@ def _full_zim_cleanup(source_id):
     zim_path = zim_source['zim_path']
     zim_title = zim_source.get('title', zim_filename)
     results = {'vectors_deleted': 0, 'docs_deleted': 0, 'file_deleted': False, 'scrape_jobs_deleted': 0}
+
+    # Guard: documents are selected by ZIM title (catalogue.category). Another ZIM with the
+    # same title that is ingesting/complete owns documents under that same category, so a
+    # cleanup by title would delete its content too. Refuse instead.
+    other = conn.execute(
+        "SELECT zim_filename FROM zim_sources WHERE title = ? AND id != ? "
+        "AND status IN ('ingesting', 'complete') LIMIT 1", (zim_title, source_id)).fetchone()
+    if other:
+        reason = (f"another ZIM with the same title ('{zim_title}') is ingested or ingesting "
+                  f"({other['zim_filename']}); cleanup by title would delete its documents")
+        logger.warning(f"ZIM cleanup for source {source_id} blocked: {reason}")
+        return {'blocked': reason}
 
     # Step 1: Find all document hashes for this ZIM source
     doc_hashes = [r['hash'] for r in conn.execute(
@@ -2229,8 +2253,14 @@ def _full_zim_cleanup(source_id):
                 )
                 if resp.status_code == 200:
                     results['vectors_deleted'] += len(batch)
+                elif resp.status_code == 404:
+                    pass  # collection does not exist: no vectors to delete
+                else:
+                    raise RuntimeError(f"HTTP {resp.status_code}")
             except Exception as e:
                 logger.warning(f"Qdrant delete batch failed: {e}")
+                # Keep the DB rows: they are the only record of which vectors to delete.
+                return {'blocked': f'Qdrant delete failed ({e}); nothing was removed'}
 
     # Step 3: Delete DB records
     for h in doc_hashes:
@@ -2254,13 +2284,15 @@ def _full_zim_cleanup(source_id):
     conn.commit()
 
     # Step 4: Remove from kiwix-serve library
-    _kiwix_remove_book(zim_filename, zim_source.get('zim_uuid'))
+    if remove_library:
+        _kiwix_remove_book(zim_filename, zim_source.get('zim_uuid'))
 
     # Step 4b: SIGHUP kiwix-serve to reload library
-    reload_kiwix_serve()
+    if remove_library:
+        reload_kiwix_serve()
 
     # Step 5: Delete the ZIM file
-    if os.path.isfile(zim_path):
+    if remove_file and os.path.isfile(zim_path):
         try:
             os.remove(zim_path)
             results['file_deleted'] = True
@@ -2269,12 +2301,13 @@ def _full_zim_cleanup(source_id):
             results['file_deleted'] = False
 
     # Step 6: Delete any linked scrape_jobs rows
-    try:
-        res = conn.execute("DELETE FROM scrape_jobs WHERE zim_source_id = ?", (source_id,))
-        conn.commit()
-        results['scrape_jobs_deleted'] = res.rowcount
-    except Exception as e:
-        logger.warning(f"scrape_jobs cleanup failed: {e}")
+    if remove_scrape_jobs:
+        try:
+            res = conn.execute("DELETE FROM scrape_jobs WHERE zim_source_id = ?", (source_id,))
+            conn.commit()
+            results['scrape_jobs_deleted'] = res.rowcount
+        except Exception as e:
+            logger.warning(f"scrape_jobs cleanup failed: {e}")
 
     logger.info(f"Full ZIM cleanup for source {source_id} ('{zim_title}'): {results}")
     return results
@@ -2292,6 +2325,8 @@ def api_kiwix_remove(source_id):
     results = _full_zim_cleanup(source_id)
     if results is None:
         return jsonify({'error': 'Source not found during cleanup'}), 404
+    if results.get('blocked'):
+        return jsonify({'error': results['blocked']}), 409
 
     # Refresh cache
     try:
@@ -2462,6 +2497,9 @@ def api_scraper_cancel(job_id):
 
     # Set cancelled in DB — the runner loop checks this between phases
     db.update_scrape_job(job_id, status='cancelled')
+    if job['status'] == 'pending' and job.get('update_run_id'):
+        from . import zim_updater
+        zim_updater.recrawl_failed(job, 'cancelled')   # never started: the runner won't see it
 
     # Stop the Docker container if running
     container_name = f'recon-scraper-{job_id}'
@@ -2518,6 +2556,8 @@ def api_scraper_delete(job_id):
     # If the job has a linked zim_source, do full cleanup
     if job.get('zim_source_id'):
         zim_cleanup_results = _full_zim_cleanup(job['zim_source_id'])
+        if zim_cleanup_results and zim_cleanup_results.get('blocked'):
+            return jsonify({'error': zim_cleanup_results['blocked']}), 409
         try:
             _cache['kiwix_sources'] = _build_kiwix_sources()
         except Exception:

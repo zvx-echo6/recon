@@ -279,6 +279,13 @@ class StatusDB:
         except Exception:
             pass  # column already exists
 
+        # Migration: re-crawl link columns on scrape_jobs (ZIM update flow)
+        for col, coltype in [('replace_zim_filename', 'TEXT'), ('update_run_id', 'INTEGER')]:
+            try:
+                conn.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {col} {coltype}")
+            except Exception:
+                pass  # column already exists
+
         # Stream B: file_operations + duplicate_review tables
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS file_operations (
@@ -333,11 +340,64 @@ class StatusDB:
                 additional_reject_patterns TEXT,
                 skip_default_patterns INTEGER DEFAULT 0,
                 crawl_mode TEXT,
+                replace_zim_filename TEXT,
+                update_run_id INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 completed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_scrape_status ON scrape_jobs(status);
+
+            -- ZIM updates (lib/zim_updater.py). zim_key = file name minus the date (and
+            -- crawl job id) suffix, e.g. wikiquote_af_all_maxi: stable across versions.
+            CREATE TABLE IF NOT EXISTS zim_update_catalog (
+                zim_key TEXT PRIMARY KEY,
+                name TEXT,
+                flavour TEXT,
+                in_catalog INTEGER DEFAULT 0,
+                latest_version TEXT,
+                latest_filename TEXT,
+                meta4_url TEXT,
+                size_bytes INTEGER,
+                checked_at TEXT,
+                error TEXT
+            );
+            CREATE TABLE IF NOT EXISTS zim_update_schedules (
+                zim_key TEXT PRIMARY KEY,
+                enabled INTEGER DEFAULT 0,
+                frequency TEXT DEFAULT 'weekly',      -- weekly | monthly
+                interval_n INTEGER DEFAULT 1,         -- monthly: every N months
+                weekday INTEGER DEFAULT 0,            -- weekly: 0 = Monday
+                monthday INTEGER DEFAULT 1,           -- monthly: day of month (clamped to month length)
+                run_time TEXT DEFAULT '02:00',        -- HH:MM, kiwix.timezone
+                next_run_at TEXT,                     -- UTC ISO
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS zim_update_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                zim_key TEXT NOT NULL,
+                title TEXT,
+                action TEXT NOT NULL,                 -- update | rollback | recrawl
+                trigger TEXT NOT NULL,                -- manual | schedule
+                status TEXT NOT NULL,                 -- running | updated | current | skipped | failed
+                message TEXT,
+                old_version TEXT,
+                new_version TEXT,
+                old_filename TEXT,
+                new_filename TEXT,
+                bytes INTEGER DEFAULT 0,
+                bytes_total INTEGER DEFAULT 0,
+                scrape_job_id INTEGER,
+                started_at TEXT,
+                ended_at TEXT,
+                log TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_zim_runs_key ON zim_update_runs(zim_key, id);
+            CREATE INDEX IF NOT EXISTS idx_zim_runs_started ON zim_update_runs(started_at);
+            CREATE TABLE IF NOT EXISTS zim_update_state (
+                k TEXT PRIMARY KEY,
+                v TEXT
+            );
         """)
         conn.commit()
 

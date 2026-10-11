@@ -46,6 +46,9 @@ def scraper_loop(stop_event, config):
             except Exception as e:
                 logger.error(f"Scraper job {job['id']} unexpected error: {e}", exc_info=True)
                 try:
+                    if job.get('update_run_id'):
+                        from . import zim_updater
+                        zim_updater.recrawl_failed(job, str(e))
                     db.update_scrape_job(job['id'],
                                          status='failed',
                                          error_message=str(e)[:1000],
@@ -299,8 +302,14 @@ def _process_job(job, config, stop_event):
 
     if error == 'cancelled':
         _handle_cancel(db, job_id)
+        if job.get('update_run_id'):
+            from . import zim_updater
+            zim_updater.recrawl_failed(job, 'cancelled')
         return
     elif error:
+        if job.get('update_run_id'):
+            from . import zim_updater
+            zim_updater.recrawl_failed(job, error)
         db.update_scrape_job(job_id,
                              status='failed',
                              error_message=error[:1000],
@@ -316,6 +325,17 @@ def _process_job(job, config, stop_event):
         return
 
     db.update_scrape_job(job_id, status='registering')
+
+    # Re-crawl of an existing ZIM: swap the new file in (old one goes to .previous/)
+    if job.get('replace_zim_filename'):
+        from . import zim_updater
+        if zim_updater.finish_recrawl(job, zim_filename):
+            src = db._get_conn().execute(
+                "SELECT id FROM zim_sources WHERE zim_filename = ?", (zim_filename,)).fetchone()
+            db.update_scrape_job(job_id, status='complete', zim_filename=zim_filename,
+                                 zim_source_id=src['id'] if src else None, completed_at=_now())
+            logger.info(f"Job {job_id}: complete (replaced {job['replace_zim_filename']}) — {zim_filename}")
+            return
 
     output_dir = config.get('scraper', {}).get('output_dir', kcfg()['dir'])
     zim_path = os.path.join(output_dir, zim_filename)
